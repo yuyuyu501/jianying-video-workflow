@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 
 
-INTERNAL_SKILLS = {"talking-head-rough-cut", "jianying-asset-director"}
+INTERNAL_SKILLS = {"talking-head-rough-cut", "media-role-director", "jianying-asset-director"}
 
 
 def locate_skill(name: str) -> Path | None:
@@ -37,53 +37,159 @@ def run(command: list[str]) -> None:
     subprocess.run(command, check=True, env=environment)
 
 
+def read_json(path: Path) -> object:
+    with path.open("r", encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+def write_json(path: Path, payload: object) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def source_exclusions(path: Path | None, source_id: str, speech_source_count: int, output_dir: Path) -> Path | None:
+    if not path:
+        return None
+    payload = read_json(path)
+    if isinstance(payload, dict) and isinstance(payload.get("sources"), dict):
+        value = payload["sources"].get(source_id, [])
+    elif speech_source_count == 1:
+        value = payload
+    else:
+        raise ValueError(
+            "Multiple speech sources require semantic exclusions shaped as "
+            "{\"sources\": {\"source_id\": [...]}}"
+        )
+    destination = output_dir / f"{source_id}.semantic-exclusions.json"
+    write_json(destination, value)
+    return destination
+
+
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Prepare the JianYing content-to-draft workflow")
-    parser.add_argument("--video", type=Path, required=True)
-    parser.add_argument("--srt", type=Path)
+    parser = argparse.ArgumentParser(description="Prepare a reviewed multi-source JianYing content-to-draft workflow")
+    parser.add_argument("--video", type=Path, action="append", required=True, help="Input video; repeat for each source asset")
+    parser.add_argument("--srt", type=Path, help="Optional externally reviewed global SRT; otherwise generate after rough cutting")
     parser.add_argument("--beats", type=Path)
     parser.add_argument("--style", default="medical_education")
-    parser.add_argument("--semantic-exclusions", type=Path, help="Reviewed rough-cut semantic exclusions JSON")
-    parser.add_argument("--render-rough-cut", action="store_true", help="Render the accepted rough-cut plan")
+    parser.add_argument("--media-decisions", type=Path, help="Reviewed media-role-director decisions JSON")
+    parser.add_argument("--semantic-exclusions", type=Path, help="Reviewed cuts; use a per-source mapping when multiple narration sources exist")
+    parser.add_argument("--render-rough-cut", action="store_true", help="Render every approved narration rough cut and then generate global captions")
+    parser.add_argument("--skip-captions", action="store_true", help="Do not generate captions after rendering rough cuts")
     parser.add_argument("--rough-cut-quality", choices=("preview", "final"), default="preview")
     parser.add_argument("--output-dir", type=Path, required=True)
     args = parser.parse_args()
-    if not args.video.is_file():
-        raise FileNotFoundError(args.video)
+    videos = [video.resolve() for video in args.video]
+    missing_videos = [str(video) for video in videos if not video.is_file()]
+    if missing_videos:
+        raise FileNotFoundError(", ".join(missing_videos))
+    if args.skip_captions and not args.render_rough_cut:
+        raise ValueError("--skip-captions only applies with --render-rough-cut")
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
-    skills = {name: locate_skill(name) for name in ["video-understand", "talking-head-rough-cut", "jianying-asset-director", "jianying-editor"]}
+    skills = {name: locate_skill(name) for name in ["video-understand", "media-role-director", "talking-head-rough-cut", "jianying-asset-director", "jianying-editor"]}
     missing = [name for name, skill in skills.items() if skill is None]
     if missing:
         print("RESULT: " + json.dumps({"status": "incomplete", "missing_skills": missing, "output_dir": str(args.output_dir)}, ensure_ascii=False))
         return 2
 
-    understanding_json = args.output_dir / "understanding.json"
-    run([sys.executable, str(skills["video-understand"] / "scripts" / "understand_video.py"), str(args.video), "-o", str(understanding_json), "-q"])
+    analysis_dir = args.output_dir / "analysis"
+    analyses: list[Path] = []
+    for index, video in enumerate(videos, start=1):
+        analysis = analysis_dir / f"source_{index:02d}_{video.stem}.json"
+        run([sys.executable, str(skills["video-understand"] / "scripts" / "understand_video.py"), str(video), "-o", str(analysis), "-q"])
+        analyses.append(analysis)
 
-    rough_cut_plan = args.output_dir / "rough_cut_plan.json"
-    plan_command = [
-        sys.executable, str(skills["talking-head-rough-cut"] / "scripts" / "rough_cut.py"), "plan",
-        "--video", str(args.video), "--analysis", str(understanding_json), "--output", str(rough_cut_plan),
+    intake_path = args.output_dir / "media_intake.json"
+    intake_command = [sys.executable, str(skills["media-role-director"] / "scripts" / "media_role_director.py"), "intake"]
+    for video, analysis in zip(videos, analyses):
+        intake_command.extend(["--video", str(video), "--analysis", str(analysis)])
+    intake_command.extend(["--output", str(intake_path)])
+    run(intake_command)
+
+    if not args.media_decisions:
+        print("RESULT: " + json.dumps({
+            "status": "review_required",
+            "media_intake": str(intake_path),
+            "analysis": [str(path) for path in analyses],
+            "next_step": "Inspect all source transcripts and frames, then provide --media-decisions to classify role, audio policy, and narration order.",
+        }, ensure_ascii=False))
+        return 0
+    if not args.media_decisions.is_file():
+        raise FileNotFoundError(args.media_decisions)
+
+    manifest_path = args.output_dir / "media_manifest.json"
+    run([
+        sys.executable, str(skills["media-role-director"] / "scripts" / "media_role_director.py"), "apply-decisions",
+        "--intake", str(intake_path), "--decisions", str(args.media_decisions.resolve()), "--output", str(manifest_path),
+    ])
+    manifest = read_json(manifest_path)
+    if not isinstance(manifest, dict):
+        raise ValueError("media manifest is not an object")
+    unresolved = manifest.get("unresolved_sources", [])
+    if unresolved:
+        print("RESULT: " + json.dumps({
+            "status": "review_required",
+            "media_manifest": str(manifest_path),
+            "unresolved_sources": unresolved,
+            "next_step": "Resolve ambiguous media-role decisions before rough cutting or muting any source.",
+        }, ensure_ascii=False))
+        return 0
+
+    sources = manifest.get("sources", [])
+    speech_sources = [source for source in sources if source.get("decision", {}).get("requires_rough_cut")]
+    if not speech_sources:
+        print("RESULT: " + json.dumps({
+            "status": "incomplete",
+            "media_manifest": str(manifest_path),
+            "reason": "No keep_original narration sources were selected; no final speech timeline can be built.",
+        }, ensure_ascii=False))
+        return 2
+
+    rough_cut_dir = args.output_dir / "rough-cuts"
+    plans: dict[str, Path] = {}
+    previews: dict[str, Path] = {}
+    for source in speech_sources:
+        source_id = str(source["id"])
+        plan = rough_cut_dir / f"{source_id}.plan.json"
+        plan_command = [
+            sys.executable, str(skills["talking-head-rough-cut"] / "scripts" / "rough_cut.py"), "plan",
+            "--video", str(source["video"]), "--analysis", str(source["analysis"]), "--output", str(plan),
+        ]
+        exclusions = source_exclusions(args.semantic_exclusions, source_id, len(speech_sources), rough_cut_dir)
+        if exclusions:
+            plan_command.extend(["--semantic-exclusions", str(exclusions)])
+        run(plan_command)
+        plans[source_id] = plan
+        if args.render_rough_cut:
+            preview = rough_cut_dir / f"{source_id}.mp4"
+            run([
+                sys.executable, str(skills["talking-head-rough-cut"] / "scripts" / "rough_cut.py"), "render",
+                "--plan", str(plan), "--output", str(preview), "--quality", args.rough_cut_quality, "--overwrite",
+            ])
+            run([
+                sys.executable, str(skills["talking-head-rough-cut"] / "scripts" / "rough_cut.py"), "validate",
+                "--plan", str(plan), "--output", str(preview),
+            ])
+            previews[source_id] = preview
+
+    attach_command = [
+        sys.executable, str(skills["media-role-director"] / "scripts" / "media_role_director.py"), "attach-rough-cuts",
+        "--manifest", str(manifest_path),
     ]
-    if args.semantic_exclusions:
-        plan_command.extend(["--semantic-exclusions", str(args.semantic_exclusions)])
-    run(plan_command)
+    for source_id, plan in plans.items():
+        attach_command.extend(["--rough-cut", f"{source_id}={plan}"])
+    run(attach_command)
 
-    working_video = args.video
-    rough_cut_preview = None
-    if args.render_rough_cut:
-        rough_cut_preview = args.output_dir / "rough_cut_preview.mp4"
+    generated_srt = None
+    speech_timeline = None
+    if args.render_rough_cut and not args.skip_captions:
+        captions_dir = args.output_dir / "captions"
         run([
-            sys.executable, str(skills["talking-head-rough-cut"] / "scripts" / "rough_cut.py"), "render",
-            "--plan", str(rough_cut_plan), "--output", str(rough_cut_preview),
-            "--quality", args.rough_cut_quality, "--overwrite",
+            sys.executable, str(skills["media-role-director"] / "scripts" / "media_role_director.py"), "captions",
+            "--manifest", str(manifest_path), "--output-dir", str(captions_dir),
         ])
-        run([
-            sys.executable, str(skills["talking-head-rough-cut"] / "scripts" / "rough_cut.py"), "validate",
-            "--plan", str(rough_cut_plan), "--output", str(rough_cut_preview),
-        ])
-        working_video = rough_cut_preview
+        generated_srt = captions_dir / "captions.srt"
+        speech_timeline = captions_dir / "speech_timeline.json"
 
     catalog_json = args.output_dir / "asset_catalog.json"
     run([sys.executable, str(skills["jianying-asset-director"] / "scripts" / "asset_director.py"), "catalog", "--output", str(catalog_json)])
@@ -97,14 +203,17 @@ def main() -> int:
 
     result = {
         "status": "succeeded",
-        "source_video": str(args.video),
-        "working_video": str(working_video),
-        "understanding": str(understanding_json),
-        "rough_cut_plan": str(rough_cut_plan),
-        "rough_cut_preview": str(rough_cut_preview) if rough_cut_preview else None,
+        "sources": [str(video) for video in videos],
+        "analysis": [str(path) for path in analyses],
+        "media_intake": str(intake_path),
+        "media_manifest": str(manifest_path),
+        "rough_cut_plans": {source_id: str(plan) for source_id, plan in plans.items()},
+        "rough_cut_previews": {source_id: str(preview) for source_id, preview in previews.items()},
+        "captions_srt": str(args.srt.resolve()) if args.srt else (str(generated_srt) if generated_srt else None),
+        "speech_timeline": str(speech_timeline) if speech_timeline else None,
         "asset_catalog": str(catalog_json),
         "asset_plan": str(asset_plan) if asset_plan else None,
-        "next_step": "Review rough-cut semantic candidates and the asset plan before creating a JianYing draft.",
+        "next_step": "Use the reviewed media manifest, captions SRT, and speech timeline to prepare timestamped visual beats before creating a JianYing draft-library project.",
     }
     print("RESULT: " + json.dumps(result, ensure_ascii=False))
     return 0

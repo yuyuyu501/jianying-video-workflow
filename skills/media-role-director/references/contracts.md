@@ -1,0 +1,55 @@
+# Media Role Contracts
+
+## Decisions
+
+Pass `apply-decisions` a JSON object with a `decisions` array, or an array.
+Every source from the intake must have exactly one decision.
+
+```json
+{
+  "decisions": [
+    {
+      "source_id": "source_01",
+      "role": "primary_narration",
+      "audio_policy": "keep_original",
+      "timeline_order": 1,
+      "reason": "Doctor explains the three emergency steps.",
+      "confidence": 0.98,
+      "review_required": false
+    },
+    {
+      "source_id": "source_02",
+      "role": "broll_visual",
+      "audio_policy": "mute",
+      "reason": "Illustrates chest pain but contains unrelated source audio.",
+      "confidence": 0.94,
+      "review_required": false
+    }
+  ]
+}
+```
+
+`timeline_order` is required for every `keep_original` narration source and
+defines the order used by the global SRT. It need not be supplied for silent
+B-roll. `confidence` is a number from 0 to 1. Low confidence or an ambiguous
+audio role must set `review_required` to `true`.
+
+## Manifest And Captions
+
+`media_manifest.json` preserves the input video and `video-understand` output
+for each source, together with the reviewed decision. After rough-cut plans
+are attached, `captions` uses the kept source ranges to map transcript segments
+onto the compressed global speech timeline.
+
+It writes two files:
+
+- `captions.srt`: text plus final timeline start/end times.
+- `speech_timeline.json`: the same final times plus `source_id`, source video,
+  original source start/end, role, and audio policy.
+
+The mapping expects cuts to occur between spoken phrases. If a proposed cut
+splits a Whisper segment, review the result before using it for final captions.
+
+Silent B-roll is an overlay on this speech-first timeline. An inserted visual
+section that adds duration must be reflected by rebuilding the speech timeline
+and SRT before it reaches `jianying-asset-director`.

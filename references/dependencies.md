@@ -2,6 +2,9 @@
 
 ## Bundled Skills
 
+- `skills/media-role-director`: classifies each source as narration, visual
+  B-roll, ambient sound, music/SFX, or excluded material; it records reviewed
+  audio policies and maps surviving multi-source speech to a global SRT.
 - `skills/talking-head-rough-cut`: plans conservative talking-head cuts and
   renders accepted plans with FFmpeg.
 - `skills/jianying-asset-director`: catalogs and matches JianYing effects and

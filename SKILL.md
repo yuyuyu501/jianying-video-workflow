@@ -1,6 +1,6 @@
 ---
 name: jianying-video-workflow
-description: Install and run a portable JianYing talking-head production workflow. Use to install its bundled talking-head-rough-cut and jianying-asset-director Skills, fetch verified video-understand and jianying-editor dependencies, remove retakes and excessive pauses, match JianYing effects and sound effects, then create and validate a JianYing draft-library project. This workflow never launches JianYing or exports video from JianYing.
+description: Install and run a portable multi-source JianYing production workflow. Use to classify source video roles and audio policies, rough-cut retained narration, generate a final-timeline SRT, match JianYing effects and sound effects, then create and validate a JianYing draft-library project. This workflow never launches JianYing or exports video from JianYing.
 ---
 
 # JianYing Video Workflow
@@ -12,8 +12,11 @@ directory.
 ```text
 video-understand (external)
 -> transcript and visual analysis
+-> media-role-director (bundled)
+-> reviewed source roles and audio policies
 -> talking-head-rough-cut (bundled) + FFmpeg
 -> approved speech-first rough cut
+-> global captions.srt + speech_timeline.json
 -> jianying-asset-director (bundled)
 -> effect and sound-effect plan
 -> jianying-editor (external)
@@ -24,6 +27,7 @@ video-understand (external)
 
 ```text
 skills/
+  media-role-director/      # bundled
   talking-head-rough-cut/    # bundled
   jianying-asset-director/   # bundled
 scripts/                     # installer, environment checker, workflow helper
@@ -59,7 +63,7 @@ python scripts/install.py
 python scripts/check_environment.py
 ```
 
-The installer copies the two bundled Skills and this workflow into the selected
+The installer copies the three bundled Skills and this workflow into the selected
 Codex Skills directory. It downloads these verified external repositories at
 the pinned commits below unless they already exist in the target directory:
 
@@ -79,39 +83,53 @@ workflow.
 
 ## Run
 
-Create analysis, a rough-cut plan, and a JianYing asset catalog:
+First create a multi-source intake. Repeat `--video` for every available
+source. This pass analyzes each file and stops with `media_intake.json`; it
+does not silently decide which original audio to mute.
 
 ```powershell
 python scripts/run_workflow.py `
-  --video "C:\path\to\video.mp4" `
+  --video "C:\path\to\doctor.mp4" `
+  --video "C:\path\to\illustration.mp4" `
   --output-dir "work\video-job"
 ```
 
-The first pass only shortens excessive silence automatically. It produces
-`rough_cut_plan.json`, including duplicate/restart candidates that must be
-reviewed rather than silently removed. To render a reviewed rough cut, supply
-approved semantic exclusions and request a preview:
+Inspect the source transcripts and frames, then use `media-role-director` to
+write reviewed decisions. Each source must state a role, an audio policy,
+reason, confidence, and a narration order when its original speech is kept.
+The role director mutes only reviewed `broll_visual` sources; it preserves or
+routes useful ambient audio explicitly.
+
+To render reviewed narration rough cuts and generate the final-timeline
+`captions.srt` plus `speech_timeline.json`, supply the decisions file. For more
+than one narration source, semantic exclusions are keyed by source ID.
 
 ```powershell
 python scripts/run_workflow.py `
-  --video "C:\path\to\video.mp4" `
+  --video "C:\path\to\doctor.mp4" `
+  --video "C:\path\to\illustration.mp4" `
+  --media-decisions "work\media_decisions.json" `
   --semantic-exclusions "work\approved_semantic_cuts.json" `
   --render-rough-cut `
   --output-dir "work\video-job"
 ```
 
-Then inspect the rough-cut preview, prepare timestamped visual beats for the
-accepted timeline, and pass them with `--beats` to create an asset plan. Only
-after the user accepts the cut and asset plan should `jianying-editor` create a
-new draft in the local draft library.
+Then inspect the rough-cut previews, global SRT, and source mapping. Prepare
+timestamped visual beats on that final timeline and pass them with `--beats` to
+create an asset plan. Only after the user accepts the cut and asset plan should
+`jianying-editor` create a new draft in the local draft library.
 
 ## Draft Handoff Gate
 
 Before handing off the draft, verify:
 
 - each semantic removal has a timestamp and reason;
+- every source has a reviewed role and audio policy; visual-only B-roll is
+  muted only when its original audio is editorially irrelevant;
 - cut boundaries do not remove words, safety language, or intentional pauses;
 - audio fades prevent clicks and narration remains intelligible;
+- `captions.srt` and `speech_timeline.json` map surviving speech to the final
+  timeline and retain each source-video reference;
 - the rendered output has video, audio, compatible codecs, and no black frames;
 - JianYing effects and sound effects use validated local-library IDs;
 - captions, PiP, titles, and effects do not collide.
@@ -120,5 +138,7 @@ Report the draft name and absolute draft-library path. Do not export or launch
 JianYing as part of this gate.
 
 Read `skills/talking-head-rough-cut/references/cut-policy.md` before changing
-pause thresholds. Use `jianying-asset-director` and `jianying-editor` only
-after the rough-cut plan has passed review.
+pause thresholds. Read `skills/media-role-director/references/contracts.md`
+before changing media decisions. Use `jianying-asset-director` and
+`jianying-editor` only after the rough-cut plan and caption mapping have passed
+review.

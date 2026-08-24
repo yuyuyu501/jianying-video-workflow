@@ -5,8 +5,8 @@ description: Analyze video content and transcripts, select JianYing visual effec
 
 # JianYing Asset Director
 
-Use this skill as the orchestration layer between `video-understand` and
-`jianying-editor`. It decides whether an effect belongs at a beat, which
+Use this skill as the orchestration layer between the reviewed
+`media-role-director` handoff and `jianying-editor`. It decides whether an effect belongs at a beat, which
 library asset is appropriate, how long it should run, where it may appear, and
 whether it passes preview and safety checks. It does not replace either skill.
 
@@ -27,33 +27,38 @@ when a draft is built; this repository does not contain user media or caches.
 Run the stages in order. Do not modify a JianYing draft before the analysis
 plan has been shown to the user.
 
-1. **Understand**: use `video-understand` to obtain duration, transcript/SRT,
+1. **Read final timeline**: when multiple source assets are used, read
+   `media_manifest.json`, `captions.srt`, and `speech_timeline.json` from
+   `media-role-director`. Treat their timestamps as the final narration
+   timeline. Do not use a raw camera timestamp for an effect, subtitle, or
+   sound-effect placement.
+2. **Understand**: use `video-understand` to obtain duration, transcript/SRT,
    scene frames, and representative frames for every cutaway or visual beat.
-2. **Plan**: normalize each beat into `start`, `end`, `spoken_text`,
+3. **Plan**: normalize each beat into `start`, `end`, `spoken_text`,
    `visual_subject`, `action`, `emotion`, `purpose`, `caption_zone`, and
    `pip_zone`. Include beats that intentionally receive no effect.
-3. **Catalog**: run `scripts/asset_director.py catalog` against the local
+4. **Catalog**: run `scripts/asset_director.py catalog` against the local
    JianYing data directory. Use real IDs from `video_scene_effects.csv` and
    `cloud_sound_effects.csv`; never invent IDs from names.
-4. **Match**: run `scripts/asset_director.py plan` with the beat JSON and
+5. **Match**: run `scripts/asset_director.py plan` with the beat JSON and
    catalog. Treat the output as candidates, not truth. Reject candidates that
    violate `references/asset_taxonomy.json` or user preferences.
-5. **Preview gate**: create short previews for every non-trivial candidate,
+6. **Preview gate**: create short previews for every non-trivial candidate,
    including captions, PiP, and the candidate audio. Inspect the actual visual
    result and waveform/loudness. Do not use names alone to judge an asset.
    A preview video may be rendered from the source assets before draft creation
    or supplied by the user. Never export a JianYing draft automatically. For a
    supplied preview, extract review clips with:
    `python scripts/asset_director.py preview --video rendered_preview.mp4 --plan plan.json --output-dir preview/`.
-6. **User gate**: output the timestamped plan, selected assets, rejected
+7. **User gate**: output the timestamped plan, selected assets, rejected
    candidates, and unresolved decisions. If the user has asked to proceed,
    continue; otherwise wait for confirmation.
-7. **Build**: call `jianying-editor` in draft-library-only mode to create a
+8. **Build**: call `jianying-editor` in draft-library-only mode to create a
    new draft. Do not launch JianYing, automate its UI, invoke
    `JianyingController`, or call an exporter. Use separate tracks for effects
    and each audio role. Keep source asset IDs, local cache paths, and the
    absolute draft path in the build report.
-8. **Validate**: run `scripts/asset_director.py validate` and the
+9. **Validate**: run `scripts/asset_director.py validate` and the
    `jianying-editor` draft inspector. Check asset existence, effect/audio
    timing, volume, overlap with captions/PiP, opening cleanliness, and that
    the draft contains no generated fallback sound when a library asset was
@@ -103,6 +108,9 @@ The plan passed to `jianying-editor` must include:
 ```json
 {
   "video": "absolute path",
+  "media_manifest": "absolute path to media_manifest.json",
+  "captions_srt": "absolute path to captions.srt",
+  "speech_timeline": "absolute path to speech_timeline.json",
   "beats": [{"start": 10.66, "end": 15.78, "purpose": "warning", "assets": []}],
   "visual_effects": [{"asset_id": "...", "name": "...", "start": 10.66, "duration": 0.8, "zone": "full_frame", "score": 0.0}],
   "sound_effects": [{"asset_id": "...", "name": "...", "start": 10.66, "duration": 0.7, "track": "SFX_Danger", "volume": 0.12, "score": 0.0}],

@@ -1,8 +1,13 @@
 {
   "name": "jianying-video-workflow",
-  "version": 2,
+  "version": 3,
   "workflow_skill": "jianying-video-workflow",
   "internal_skills": [
+    {
+      "name": "media-role-director",
+      "path": "skills/media-role-director",
+      "required": true
+    },
     {
       "name": "talking-head-rough-cut",
       "path": "skills/talking-head-rough-cut",

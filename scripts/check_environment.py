@@ -13,6 +13,7 @@ from typing import Iterable
 
 REQUIRED_SKILLS = [
     "video-understand",
+    "media-role-director",
     "talking-head-rough-cut",
     "jianying-asset-director",
     "jianying-editor",

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Media Role Director"
+  short_description: "Classify video roles, audio policies, and captions"
+  default_prompt: "Use $media-role-director to classify my video assets into narration, B-roll, ambient audio, music, or exclusions, then produce a reviewed media manifest and final-timeline captions."
