@@ -1,0 +1,32 @@
+{
+  "name": "jianying-video-workflow",
+  "version": 1,
+  "workflow_skill": "jianying-video-workflow",
+  "skills": [
+    {
+      "name": "jianying-asset-director",
+      "source": "github",
+      "repository": "git@github.com:yuyuyu501/jianying-asset-director.git",
+      "required": true
+    },
+    {
+      "name": "video-understand",
+      "source": "codex-local-or-explicit-git-url",
+      "required": true
+    },
+    {
+      "name": "jianying-editor",
+      "source": "codex-local-or-explicit-git-url",
+      "required": true
+    }
+  ],
+  "tools": {
+    "required": ["python", "git", "ffmpeg", "ffprobe"],
+    "application": "JianYingPro"
+  },
+  "environment_variables": {
+    "CODEX_HOME": "Optional Codex installation root",
+    "JY_SKILL_ROOT": "Optional JianYing Skill root",
+    "JY_ASSET_DIRECTOR_DATA_DIR": "Optional JianYing asset index directory"
+  }
+}
