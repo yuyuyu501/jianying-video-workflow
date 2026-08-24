@@ -34,6 +34,13 @@
     "required": ["python", "ffmpeg", "ffprobe"],
     "application": "JianYingPro"
   },
+  "jianying_editor_policy": {
+    "mode": "draft_library_only",
+    "launch_application": false,
+    "automate_ui": false,
+    "export_video": false,
+    "endpoint": "validated_draft_path"
+  },
   "environment_variables": {
     "CODEX_HOME": "Optional Codex installation root",
     "JY_SKILL_ROOT": "Optional jianying-editor Skill root",

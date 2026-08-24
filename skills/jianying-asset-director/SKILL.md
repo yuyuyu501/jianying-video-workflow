@@ -41,19 +41,24 @@ plan has been shown to the user.
 5. **Preview gate**: create short previews for every non-trivial candidate,
    including captions, PiP, and the candidate audio. Inspect the actual visual
    result and waveform/loudness. Do not use names alone to judge an asset.
-   After exporting a scratch or full draft preview, extract review clips with:
+   A preview video may be rendered from the source assets before draft creation
+   or supplied by the user. Never export a JianYing draft automatically. For a
+   supplied preview, extract review clips with:
    `python scripts/asset_director.py preview --video rendered_preview.mp4 --plan plan.json --output-dir preview/`.
 6. **User gate**: output the timestamped plan, selected assets, rejected
    candidates, and unresolved decisions. If the user has asked to proceed,
    continue; otherwise wait for confirmation.
-7. **Build**: call `jianying-editor` to create a new draft. Use separate
-   tracks for effects and each audio role. Keep source asset IDs and local
-   cache paths in the build report.
+7. **Build**: call `jianying-editor` in draft-library-only mode to create a
+   new draft. Do not launch JianYing, automate its UI, invoke
+   `JianyingController`, or call an exporter. Use separate tracks for effects
+   and each audio role. Keep source asset IDs, local cache paths, and the
+   absolute draft path in the build report.
 8. **Validate**: run `scripts/asset_director.py validate` and the
    `jianying-editor` draft inspector. Check asset existence, effect/audio
    timing, volume, overlap with captions/PiP, opening cleanliness, and that
    the draft contains no generated fallback sound when a library asset was
-   selected.
+   selected. This structural validation is the workflow's endpoint; the user
+   manually opens and exports the draft outside the workflow.
 
 ## Matching Rules
 
@@ -103,6 +108,8 @@ The plan passed to `jianying-editor` must include:
   "sound_effects": [{"asset_id": "...", "name": "...", "start": 10.66, "duration": 0.7, "track": "SFX_Danger", "volume": 0.12, "score": 0.0}],
   "rejected": [{"asset_id": "...", "reason": "cartoon asset forbidden for medical warning"}],
   "preview_required": true,
+  "draft_library_only": true,
+  "export": {"mode": "manual_user_action_required"},
   "validation": {"status": "pending"}
 }
 ```

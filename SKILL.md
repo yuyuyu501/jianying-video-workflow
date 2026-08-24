@@ -1,6 +1,6 @@
 ---
 name: jianying-video-workflow
-description: Install and run a portable JianYing talking-head production workflow. Use to install its bundled talking-head-rough-cut and jianying-asset-director Skills, fetch verified video-understand and jianying-editor dependencies, remove retakes and excessive pauses before editing, match JianYing effects and sound effects, build a draft, and validate the result.
+description: Install and run a portable JianYing talking-head production workflow. Use to install its bundled talking-head-rough-cut and jianying-asset-director Skills, fetch verified video-understand and jianying-editor dependencies, remove retakes and excessive pauses, match JianYing effects and sound effects, then create and validate a JianYing draft-library project. This workflow never launches JianYing or exports video from JianYing.
 ---
 
 # JianYing Video Workflow
@@ -17,7 +17,7 @@ video-understand (external)
 -> jianying-asset-director (bundled)
 -> effect and sound-effect plan
 -> jianying-editor (external)
--> JianYing draft and delivery validation
+-> JianYing draft-library creation and structural validation
 ```
 
 ## Repository Layout
@@ -32,6 +32,23 @@ manifest.json                # internal and external dependency policy
 
 Do not add user videos, drafts, cloud caches, credentials, or generated media
 to this repository.
+
+## JianYing Draft-Library Mode
+
+`jianying-editor` is deliberately restricted to direct operations on the local
+JianYing draft library. It may create, read, repair, and structurally inspect
+draft files such as `draft_info.json`; JianYing itself does not need to be
+running for these operations.
+
+Do not launch JianYing Pro, drive its UI, invoke `JianyingController`, call
+`auto_exporter.py` or `export_draft`, or ask the user to open an export page.
+Do not treat a draft as an exported deliverable. The workflow ends with a
+validated draft name and absolute draft path. Opening that draft and exporting
+an MP4 are manual user actions outside this workflow.
+
+For connection checks, use `jianying-editor`'s draft inspector only. Do not
+run its API validator: it creates a diagnostic draft and can report a false
+failure on Windows when the console uses GBK instead of UTF-8.
 
 ## Install
 
@@ -54,6 +71,11 @@ the pinned commits below unless they already exist in the target directory:
 Use `--upgrade-external` to re-install the pinned external dependencies. Use
 `--skills-dir` to select a non-default Codex Skills directory, or
 `--skip-external` when those Skills are already managed elsewhere.
+
+During installation, the workflow adds its draft-library-only policy to the
+installed `jianying-editor` Skill. This makes the no-launch/no-export boundary
+available even when that external Skill is invoked directly as part of this
+workflow.
 
 ## Run
 
@@ -81,11 +103,11 @@ python scripts/run_workflow.py `
 Then inspect the rough-cut preview, prepare timestamped visual beats for the
 accepted timeline, and pass them with `--beats` to create an asset plan. Only
 after the user accepts the cut and asset plan should `jianying-editor` create a
-new draft.
+new draft in the local draft library.
 
-## Acceptance Gate
+## Draft Handoff Gate
 
-Before delivery, verify:
+Before handing off the draft, verify:
 
 - each semantic removal has a timestamp and reason;
 - cut boundaries do not remove words, safety language, or intentional pauses;
@@ -93,6 +115,9 @@ Before delivery, verify:
 - the rendered output has video, audio, compatible codecs, and no black frames;
 - JianYing effects and sound effects use validated local-library IDs;
 - captions, PiP, titles, and effects do not collide.
+
+Report the draft name and absolute draft-library path. Do not export or launch
+JianYing as part of this gate.
 
 Read `skills/talking-head-rough-cut/references/cut-policy.md` before changing
 pause thresholds. Use `jianying-asset-director` and `jianying-editor` only

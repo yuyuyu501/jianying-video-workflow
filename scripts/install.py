@@ -25,6 +25,8 @@ EXTERNAL_SOURCES = {
     },
 }
 
+JY_POLICY_MARKER = "<!-- jianying-video-workflow: draft-library-only -->"
+
 
 def skill_roots(explicit: Path | None = None) -> list[Path]:
     roots: list[Path] = []
@@ -95,6 +97,34 @@ def install_from_archive(name: str, repository: str, revision: str, target: Path
     return str(target)
 
 
+def apply_jianying_editor_policy(target: Path, repo_root: Path) -> None:
+    """Make the workflow-specific operating boundary visible inside the external Skill."""
+    source = repo_root / "references" / "jianying-editor-draft-library-mode.md"
+    if not source.is_file():
+        raise RuntimeError(f"Missing JianYing editor policy: {source}")
+    policy = target / "references" / "jianying-video-workflow-draft-library-mode.md"
+    policy.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, policy)
+
+    skill_file = target / "SKILL.md"
+    if not skill_file.is_file():
+        raise RuntimeError(f"Installed jianying-editor has no SKILL.md: {target}")
+    content = skill_file.read_text(encoding="utf-8")
+    if JY_POLICY_MARKER not in content:
+        content = (
+            content.rstrip()
+            + "\n\n"
+            + JY_POLICY_MARKER
+            + "\n\n## JianYing Video Workflow Policy\n\n"
+            + "When this Skill is installed by `jianying-video-workflow`, read "
+            + "[the draft-library-only policy]"
+            + "(references/jianying-video-workflow-draft-library-mode.md) before "
+            + "performing any JianYing operation. The policy is mandatory for this "
+            + "workflow and overrides export or UI-automation examples in this Skill.\n"
+        )
+        skill_file.write_text(content, encoding="utf-8")
+
+
 def existing_skill(name: str, roots: Iterable[Path]) -> str | None:
     for root in roots:
         candidate = root / name
@@ -152,6 +182,8 @@ def main() -> int:
             installed[name] = str(target)
         else:
             installed[name] = install_from_archive(name, repository, revision, target, args.external_timeout)
+        if name == "jianying-editor" and installed[name]:
+            apply_jianying_editor_policy(Path(installed[name]), repo_root)
 
     missing = [name for name, path in installed.items() if not path]
     result = {
