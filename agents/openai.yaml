@@ -1,4 +1,4 @@
 interface:
   display_name: "JianYing Video Workflow"
-  short_description: "Install and run the complete JianYing video editing workflow"
-  default_prompt: "Use $jianying-video-workflow to install the required Skills, analyze a video, match JianYing assets, build a draft, and validate the result."
+  short_description: "Install and run the JianYing talking-head editing workflow"
+  default_prompt: "Use $jianying-video-workflow to rough-cut a talking-head video, match JianYing assets, build a draft, and validate the result."

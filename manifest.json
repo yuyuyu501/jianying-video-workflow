@@ -1,32 +1,43 @@
 {
   "name": "jianying-video-workflow",
-  "version": 1,
+  "version": 2,
   "workflow_skill": "jianying-video-workflow",
-  "skills": [
+  "internal_skills": [
     {
-      "name": "jianying-asset-director",
-      "source": "github",
-      "repository": "git@github.com:yuyuyu501/jianying-asset-director.git",
+      "name": "talking-head-rough-cut",
+      "path": "skills/talking-head-rough-cut",
       "required": true
     },
     {
+      "name": "jianying-asset-director",
+      "path": "skills/jianying-asset-director",
+      "required": true
+    }
+  ],
+  "external_skills": [
+    {
       "name": "video-understand",
-      "source": "codex-local-or-explicit-git-url",
+      "repository": "https://github.com/MomoFadaly/video-understand.git",
+      "revision": "4848131e123fb868a6ae6a4f7fef33a82a0119df",
+      "license": "Apache-2.0",
       "required": true
     },
     {
       "name": "jianying-editor",
-      "source": "codex-local-or-explicit-git-url",
+      "repository": "https://github.com/luoluoluo22/jianying-editor-skill.git",
+      "revision": "f421c8a036f4fda888a83b38fc90bb9c00d6faa9",
+      "license": "MIT",
       "required": true
     }
   ],
   "tools": {
-    "required": ["python", "git", "ffmpeg", "ffprobe"],
+    "required": ["python", "ffmpeg", "ffprobe"],
     "application": "JianYingPro"
   },
   "environment_variables": {
     "CODEX_HOME": "Optional Codex installation root",
-    "JY_SKILL_ROOT": "Optional JianYing Skill root",
-    "JY_ASSET_DIRECTOR_DATA_DIR": "Optional JianYing asset index directory"
+    "JY_SKILL_ROOT": "Optional jianying-editor Skill root",
+    "JY_ASSET_DIRECTOR_DATA_DIR": "Optional JianYing asset index directory",
+    "PYTHONUTF8": "Set to 1 on Windows when running video-understand"
   }
 }

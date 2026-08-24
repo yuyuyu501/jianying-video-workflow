@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check tools, JianYing, and sibling Codex Skills for this workflow."""
+"""Check tools, JianYing, and Skill prerequisites for this workflow."""
 
 from __future__ import annotations
 
@@ -8,28 +8,26 @@ import json
 import os
 import shutil
 from pathlib import Path
-from typing import Dict, Iterable, List
+from typing import Iterable
 
 
-def skill_roots(explicit: Path | None = None) -> List[Path]:
-    roots: List[Path] = []
+REQUIRED_SKILLS = [
+    "video-understand",
+    "talking-head-rough-cut",
+    "jianying-asset-director",
+    "jianying-editor",
+]
+
+
+def skill_roots(explicit: Path | None = None) -> list[Path]:
+    roots: list[Path] = []
     if explicit:
         roots.append(explicit.expanduser())
-    skill_root = os.environ.get("JY_SKILL_ROOT", "").strip()
-    if skill_root:
-        roots.append(Path(skill_root).expanduser())
     codex_home = os.environ.get("CODEX_HOME", "").strip()
     if codex_home:
         roots.append(Path(codex_home).expanduser() / "skills")
-    roots.extend([
-        Path.home() / ".codex" / "skills",
-        Path.home() / ".agents" / "skills",
-    ])
-    result: List[Path] = []
-    for root in roots:
-        if root not in result:
-            result.append(root)
-    return result
+    roots.extend([Path.home() / ".codex" / "skills", Path.home() / ".agents" / "skills"])
+    return list(dict.fromkeys(roots))
 
 
 def find_skill(name: str, roots: Iterable[Path]) -> str | None:
@@ -48,12 +46,9 @@ def find_jianying() -> str | None:
     local_app_data = os.environ.get("LOCALAPPDATA", "")
     if local_app_data:
         candidates.append(Path(local_app_data) / "JianyingPro" / "Apps" / "JianyingPro.exe")
-    candidates.extend([
-        Path(r"C:\Program Files\JianyingPro\JianyingPro.exe"),
-        Path(r"C:\Program Files (x86)\JianyingPro\JianyingPro.exe"),
-    ])
+    candidates.extend([Path(r"C:\Program Files\JianyingPro\JianYingPro.exe"), Path(r"C:\Program Files (x86)\JianyingPro\JianYingPro.exe")])
     for candidate in candidates:
-        if candidate and candidate.exists():
+        if candidate.exists():
             return str(candidate)
     return None
 
@@ -63,25 +58,22 @@ def main() -> int:
     parser.add_argument("--skills-dir", type=Path)
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
-
     roots = skill_roots(args.skills_dir)
-    tools: Dict[str, str | None] = {name: shutil.which(name) for name in ["python", "git", "ffmpeg", "ffprobe"]}
-    skills = {name: find_skill(name, roots) for name in ["video-understand", "jianying-asset-director", "jianying-editor"]}
+    tools = {name: shutil.which(name) for name in ["python", "ffmpeg", "ffprobe"]}
+    skills = {name: find_skill(name, roots) for name in REQUIRED_SKILLS}
+    jianying = find_jianying()
+    missing = [*[name for name, value in tools.items() if not value], *[name for name, value in skills.items() if not value], *([] if jianying else ["JianYingPro"])]
     result = {
-        "status": "succeeded" if all(tools.values()) and all(skills.values()) and find_jianying() else "failed",
+        "status": "succeeded" if not missing else "failed",
         "tools": tools,
         "skills": skills,
-        "jianying": find_jianying(),
+        "jianying": jianying,
         "skills_roots": [str(root) for root in roots],
-        "missing": [
-            *[name for name, value in tools.items() if not value],
-            *[name for name, value in skills.items() if not value],
-            *([] if find_jianying() else ["JianYingPro"]),
-        ],
+        "missing": missing,
     }
     output = json.dumps(result, ensure_ascii=False, indent=2)
     print(output if args.json else "RESULT: " + json.dumps(result, ensure_ascii=False))
-    return 0 if result["status"] == "succeeded" else 2
+    return 0 if not missing else 2
 
 
 if __name__ == "__main__":

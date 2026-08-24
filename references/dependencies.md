@@ -1,30 +1,35 @@
-# Dependency Notes
+# Dependency Policy
 
-## Public dependency
+## Bundled Skills
 
-`jianying-asset-director` is downloaded from:
+- `skills/talking-head-rough-cut`: plans conservative talking-head cuts and
+  renders accepted plans with FFmpeg.
+- `skills/jianying-asset-director`: catalogs and matches JianYing effects and
+  sound effects after the rough cut is accepted.
 
-`git@github.com:yuyuyu501/jianying-asset-director.git`
+These are maintained in this repository and installed as sibling Codex Skills.
+The former standalone `jianying-asset-director` repository is not a runtime
+dependency of this workflow.
 
-## Codex-local dependencies
+## Verified External Skills
 
-The current `video-understand` and `jianying-editor` installations do not
-contain verified upstream repository URLs. The installer checks these paths:
+- `video-understand`: `https://github.com/MomoFadaly/video-understand.git`
+  at `4848131e123fb868a6ae6a4f7fef33a82a0119df` (Apache-2.0)
+- `jianying-editor`:
+  `https://github.com/luoluoluo22/jianying-editor-skill.git` at
+  `f421c8a036f4fda888a83b38fc90bb9c00d6faa9` (MIT)
 
-- `$CODEX_HOME/skills/<name>` when `CODEX_HOME` is set
-- `~/.codex/skills/<name>`
-- `~/.agents/skills/<name>`
+The installer downloads source archives for these exact Git revisions. It does
+not infer repositories from Skill names. Pass `--skip-external` when another
+version is managed locally, or `--upgrade-external` to re-install the pinned
+target version.
 
-Pass `--video-understand-repo` or `--jianying-editor-repo` only after verifying
-the repository is the intended Skill and its license permits redistribution.
-
-## Machine dependencies
+## Machine Dependencies
 
 - Python 3.10+
-- Git
 - FFmpeg and ffprobe on `PATH`
-- JianYing Pro installed and available to the user
-- A local JianYing asset index for effect and sound-effect lookup
+- JianYing Pro for draft creation
+- A local JianYing asset index for visual-effect and sound-effect lookup
 
-The installer reports missing system dependencies. It does not silently alter
-system packages or log into JianYing.
+Set `PYTHONUTF8=1` on Windows when running `video-understand`; this prevents
+GBK decoding failures from FFmpeg or ffprobe output.

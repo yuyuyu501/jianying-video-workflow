@@ -1,0 +1,4 @@
+interface:
+  display_name: "剪映素材导演"
+  short_description: "按视频内容匹配剪映画面特效与音效并生成预览验收方案"
+  default_prompt: "Use $jianying-asset-director to analyze a video, select and preview JianYing effects and sound effects, then build and verify a draft."

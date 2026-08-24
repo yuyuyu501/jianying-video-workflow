@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Install the workflow and its explicit, verified Skill dependencies."""
+"""Install the bundled Skills and verified external dependencies."""
 
 from __future__ import annotations
 
@@ -7,17 +7,27 @@ import argparse
 import json
 import os
 import shutil
-import subprocess
 import tempfile
+import urllib.request
+import zipfile
 from pathlib import Path
-from typing import Iterable, List
+from typing import Iterable
 
 
-ASSET_DIRECTOR_REPO = "git@github.com:yuyuyu501/jianying-asset-director.git"
+EXTERNAL_SOURCES = {
+    "video-understand": {
+        "repository": "https://github.com/MomoFadaly/video-understand.git",
+        "revision": "4848131e123fb868a6ae6a4f7fef33a82a0119df",
+    },
+    "jianying-editor": {
+        "repository": "https://github.com/luoluoluo22/jianying-editor-skill.git",
+        "revision": "f421c8a036f4fda888a83b38fc90bb9c00d6faa9",
+    },
+}
 
 
-def skill_roots(explicit: Path | None = None) -> List[Path]:
-    roots: List[Path] = []
+def skill_roots(explicit: Path | None = None) -> list[Path]:
+    roots: list[Path] = []
     if explicit:
         roots.append(explicit.expanduser())
     codex_home = os.environ.get("CODEX_HOME", "").strip()
@@ -25,10 +35,6 @@ def skill_roots(explicit: Path | None = None) -> List[Path]:
         roots.append(Path(codex_home).expanduser() / "skills")
     roots.extend([Path.home() / ".codex" / "skills", Path.home() / ".agents" / "skills"])
     return list(dict.fromkeys(roots))
-
-
-def run(command: List[str]) -> None:
-    subprocess.run(command, check=True)
 
 
 def copy_skill(source: Path, target: Path) -> None:
@@ -39,22 +45,49 @@ def copy_skill(source: Path, target: Path) -> None:
 
 
 def discover_skill(root: Path, name: str) -> Path | None:
-    direct = root / "SKILL.md"
-    if direct.exists():
+    if (root / "SKILL.md").exists():
         return root
-    nested = root / name / "SKILL.md"
-    if nested.exists():
-        return nested.parent
-    for candidate in root.glob("*/SKILL.md"):
+    direct = root / name
+    if (direct / "SKILL.md").exists():
+        return direct
+    candidates = list(root.glob("*/SKILL.md"))
+    for candidate in candidates:
         if candidate.parent.name == name:
             return candidate.parent
+    if len(candidates) == 1:
+        return candidates[0].parent
     return None
 
 
-def install_from_git(name: str, repository: str, target: Path) -> str:
+def archive_url(repository: str, revision: str) -> str:
+    base = repository.removesuffix(".git").rstrip("/")
+    if not base.startswith("https://github.com/"):
+        raise ValueError("External repositories must use an HTTPS GitHub URL")
+    return f"{base}/archive/{revision}.zip"
+
+
+def extract_archive(archive: Path, destination: Path) -> None:
+    destination_root = destination.resolve()
+    with zipfile.ZipFile(archive) as bundle:
+        for member in bundle.infolist():
+            target = (destination_root / member.filename).resolve()
+            try:
+                target.relative_to(destination_root)
+            except ValueError as error:
+                raise RuntimeError(f"Archive contains an unsafe path: {member.filename}") from error
+        bundle.extractall(destination_root)
+
+
+def install_from_archive(name: str, repository: str, revision: str, target: Path, timeout: int) -> str:
     with tempfile.TemporaryDirectory(prefix=f"{name}-") as temp:
-        checkout = Path(temp) / "checkout"
-        run(["git", "clone", "--depth", "1", repository, str(checkout)])
+        temporary = Path(temp)
+        archive = temporary / "source.zip"
+        request = urllib.request.Request(archive_url(repository, revision), headers={"User-Agent": "jianying-video-workflow"})
+        with urllib.request.urlopen(request, timeout=timeout) as response, archive.open("wb") as output:
+            shutil.copyfileobj(response, output)
+        checkout = temporary / "checkout"
+        checkout.mkdir()
+        extract_archive(archive, checkout)
         source = discover_skill(checkout, name)
         if source is None:
             raise RuntimeError(f"Repository does not contain a discoverable {name} Skill")
@@ -70,48 +103,63 @@ def existing_skill(name: str, roots: Iterable[Path]) -> str | None:
     return None
 
 
+def bundled_skills(repo_root: Path) -> list[Path]:
+    skills_root = repo_root / "skills"
+    return sorted(path.parent for path in skills_root.glob("*/SKILL.md"))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Install JianYing video workflow Skills")
     parser.add_argument("--skills-dir", type=Path, help="Target Codex skills directory")
-    parser.add_argument("--asset-director-repo", default=ASSET_DIRECTOR_REPO)
-    parser.add_argument(
-        "--upgrade-asset-director",
-        action="store_true",
-        help="Re-download jianying-asset-director even when it is already installed",
-    )
-    parser.add_argument("--video-understand-repo", help="Explicit verified Git URL")
-    parser.add_argument("--jianying-editor-repo", help="Explicit verified Git URL")
-    parser.add_argument("--skip-workflow", action="store_true")
+    parser.add_argument("--video-understand-repo", default=EXTERNAL_SOURCES["video-understand"]["repository"], help="Verified Git URL")
+    parser.add_argument("--jianying-editor-repo", default=EXTERNAL_SOURCES["jianying-editor"]["repository"], help="Verified Git URL")
+    parser.add_argument("--video-understand-revision", default=EXTERNAL_SOURCES["video-understand"]["revision"], help="Pinned Git revision")
+    parser.add_argument("--jianying-editor-revision", default=EXTERNAL_SOURCES["jianying-editor"]["revision"], help="Pinned Git revision")
+    parser.add_argument("--external-timeout", type=int, default=600, help="Per-dependency download timeout in seconds")
+    parser.add_argument("--skip-external", action="store_true", help="Do not install external Skills")
+    parser.add_argument("--upgrade-external", action="store_true", help="Re-download external Skills even when installed in target")
+    parser.add_argument("--skip-workflow", action="store_true", help="Do not install the top-level workflow Skill")
     args = parser.parse_args()
 
     roots = skill_roots(args.skills_dir)
     target_root = roots[0]
     target_root.mkdir(parents=True, exist_ok=True)
     repo_root = Path(__file__).resolve().parents[1]
-    installed = {}
-    if not args.skip_workflow and repo_root != target_root / "jianying-video-workflow":
-        copy_skill(repo_root, target_root / "jianying-video-workflow")
-        installed["jianying-video-workflow"] = str(target_root / "jianying-video-workflow")
+    bundled = bundled_skills(repo_root)
+    if not bundled:
+        raise RuntimeError(f"No bundled Skills found under {repo_root / 'skills'}")
 
-    existing_asset = existing_skill("jianying-asset-director", roots)
-    if existing_asset and not args.upgrade_asset_director:
-        installed["jianying-asset-director"] = existing_asset
-    else:
-        installed["jianying-asset-director"] = install_from_git(
-            "jianying-asset-director", args.asset_director_repo, target_root / "jianying-asset-director"
-        )
+    installed: dict[str, str | None] = {}
+    workflow_target = target_root / "jianying-video-workflow"
+    if not args.skip_workflow:
+        if repo_root != workflow_target:
+            copy_skill(repo_root, workflow_target)
+        installed["jianying-video-workflow"] = str(workflow_target)
 
-    for name, repository in [
-        ("video-understand", args.video_understand_repo),
-        ("jianying-editor", args.jianying_editor_repo),
+    for skill in bundled:
+        target = target_root / skill.name
+        copy_skill(skill, target)
+        installed[skill.name] = str(target)
+
+    for name, repository, revision in [
+        ("video-understand", args.video_understand_repo, args.video_understand_revision),
+        ("jianying-editor", args.jianying_editor_repo, args.jianying_editor_revision),
     ]:
-        if repository:
-            installed[name] = install_from_git(name, repository, target_root / name)
-        else:
+        target = target_root / name
+        if args.skip_external:
             installed[name] = existing_skill(name, roots)
+        elif (target / "SKILL.md").exists() and not args.upgrade_external:
+            installed[name] = str(target)
+        else:
+            installed[name] = install_from_archive(name, repository, revision, target, args.external_timeout)
 
     missing = [name for name, path in installed.items() if not path]
-    result = {"status": "succeeded" if not missing else "incomplete", "installed": installed, "missing": missing, "skills_root": str(target_root)}
+    result = {
+        "status": "succeeded" if not missing else "incomplete",
+        "installed": installed,
+        "missing": missing,
+        "skills_root": str(target_root),
+    }
     print("RESULT: " + json.dumps(result, ensure_ascii=False))
     return 0 if not missing else 2
 

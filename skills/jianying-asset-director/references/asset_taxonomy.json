@@ -1,0 +1,66 @@
+{
+  "version": 1,
+  "style_profiles": {
+    "medical_education": {
+      "preferred": ["restrained", "documentary", "warning", "confirmation", "scan", "whoosh"],
+      "forbidden": ["cartoon", "comedy", "fireworks", "celebration", "laugh", "explosion"],
+      "max_visual_intensity": 0.72,
+      "max_audio_intensity": 0.55
+    },
+    "general_short_video": {
+      "preferred": ["impact", "transition", "highlight", "notification"],
+      "forbidden": [],
+      "max_visual_intensity": 0.9,
+      "max_audio_intensity": 0.8
+    }
+  },
+  "beat_purposes": {
+    "warning": {
+      "preferred": ["warning", "impact", "glitch", "low_frequency", "notification"],
+      "forbidden": ["cartoon", "comedy", "celebration", "fireworks"],
+      "max_duration": 1.2
+    },
+    "chapter": {
+      "preferred": ["whoosh", "scan", "transition", "notification"],
+      "forbidden": ["cartoon", "comedy", "explosion"],
+      "max_duration": 1.4
+    },
+    "correct_action": {
+      "preferred": ["confirmation", "scan", "highlight", "notification"],
+      "forbidden": ["warning", "glitch", "cartoon", "fireworks"],
+      "max_duration": 1.2
+    },
+    "time_pressure": {
+      "preferred": ["timer", "notification", "warning", "impact"],
+      "forbidden": ["comedy", "celebration", "cartoon"],
+      "max_duration": 1.2
+    },
+    "emergency_call": {
+      "preferred": ["notification", "emergency", "confirmation"],
+      "forbidden": ["comedy", "cartoon", "celebration", "fireworks"],
+      "max_duration": 1.4
+    }
+  },
+  "asset_tags": {
+    "故障震闪": {"tags": ["glitch", "warning", "impact"], "intensity": 0.7},
+    "交叉震闪": {"tags": ["glitch", "warning", "impact"], "intensity": 0.7},
+    "色散冲击": {"tags": ["impact", "warning"], "intensity": 0.75},
+    "不对劲": {"tags": ["warning", "notification"], "intensity": 0.55},
+    "冲击波": {"tags": ["impact", "warning"], "intensity": 0.7},
+    "扫描光条": {"tags": ["scan", "transition", "restrained"], "intensity": 0.4},
+    "光线扫描": {"tags": ["scan", "highlight", "confirmation", "restrained"], "intensity": 0.35},
+    "倒计时": {"tags": ["timer", "time_pressure"], "intensity": 0.55},
+    "倒计时_II": {"tags": ["timer", "time_pressure"], "intensity": 0.55},
+    "科技提示音效": {"tags": ["notification", "confirmation"], "intensity": 0.35},
+    "wei 咻": {"tags": ["whoosh", "transition"], "intensity": 0.35},
+    "深沉滚雷烟花1": {"tags": ["low_frequency", "warning", "impact", "fireworks"], "intensity": 0.8},
+    "烟花爆炸音效19": {"tags": ["explosion", "fireworks", "impact"], "intensity": 0.95},
+    "卡通滑稽鼓点2": {"tags": ["cartoon", "comedy"], "intensity": 0.7},
+    "剧场观众笑声4": {"tags": ["laugh", "comedy"], "intensity": 0.8}
+  },
+  "relations": {
+    "warning": {"compatible_with": ["warning", "impact", "low_frequency", "notification"], "avoid_with": ["comedy", "cartoon", "fireworks", "celebration"]},
+    "correct_action": {"compatible_with": ["confirmation", "scan", "highlight"], "avoid_with": ["glitch", "explosion", "comedy"]},
+    "chapter": {"compatible_with": ["whoosh", "scan", "transition"], "avoid_with": ["fireworks", "laugh", "cartoon"]}
+  }
+}

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Talking Head Rough Cut"
+  short_description: "Plan and render speech-first talking-head rough cuts"
+  default_prompt: "Use $talking-head-rough-cut to remove retakes, filler, and excessive pauses from this talking-head video."

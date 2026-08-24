@@ -1,122 +1,99 @@
 ---
 name: jianying-video-workflow
-description: Install and run a portable JianYing video-production workflow that checks the local environment, installs the public jianying-asset-director skill, detects or accepts sources for video-understand and jianying-editor, analyzes video content before editing, matches JianYing assets, builds drafts, and validates previews and resources. Use for setting up this workflow on a new computer or running the complete analysis-to-draft pipeline.
+description: Install and run a portable JianYing talking-head production workflow. Use to install its bundled talking-head-rough-cut and jianying-asset-director Skills, fetch verified video-understand and jianying-editor dependencies, remove retakes and excessive pauses before editing, match JianYing effects and sound effects, build a draft, and validate the result.
 ---
 
 # JianYing Video Workflow
 
-Use this Skill as the top-level orchestrator for the three-stage workflow:
+Use this repository as one portable workflow package. It bundles the Skills we
+own and installs verified external Skills as siblings in the Codex Skills
+directory.
 
 ```text
-video-understand
--> content, transcript, emotion, action analysis
--> jianying-asset-director
--> asset catalog, semantic matching, exclusions, scoring, previews
--> jianying-editor
--> draft creation and resource/layout validation
+video-understand (external)
+-> transcript and visual analysis
+-> talking-head-rough-cut (bundled) + FFmpeg
+-> approved speech-first rough cut
+-> jianying-asset-director (bundled)
+-> effect and sound-effect plan
+-> jianying-editor (external)
+-> JianYing draft and delivery validation
 ```
 
-This repository contains the workflow and installer. It does not bundle user
-videos, JianYing drafts, cloud caches, credentials, or the source code of
-third-party Skills whose upstream license/source is not known.
+## Repository Layout
 
-## Install On A New Computer
+```text
+skills/
+  talking-head-rough-cut/    # bundled
+  jianying-asset-director/   # bundled
+scripts/                     # installer, environment checker, workflow helper
+manifest.json                # internal and external dependency policy
+```
 
-Run from a clone of this repository:
+Do not add user videos, drafts, cloud caches, credentials, or generated media
+to this repository.
+
+## Install
+
+From a clone of this repository, run:
 
 ```powershell
 python scripts/install.py
 python scripts/check_environment.py
 ```
 
-The installer:
+The installer copies the two bundled Skills and this workflow into the selected
+Codex Skills directory. It downloads these verified external repositories at
+the pinned commits below unless they already exist in the target directory:
 
-- installs this workflow into the Codex Skills directory;
-- downloads `jianying-asset-director` from its pinned public Git repository;
-- detects existing `video-understand` and `jianying-editor` Skills;
-- can install either detected Skill when the user supplies an explicit Git URL;
-- reports missing Python, Git, FFmpeg, ffprobe, or JianYing instead of silently
-  changing the system.
+- `https://github.com/MomoFadaly/video-understand.git` at
+  `4848131e123fb868a6ae6a4f7fef33a82a0119df`
+- `https://github.com/luoluoluo22/jianying-editor-skill.git` at
+  `f421c8a036f4fda888a83b38fc90bb9c00d6faa9`
 
-Repeated installs reuse an existing `jianying-asset-director`. To explicitly
-refresh it from the configured repository, pass `--upgrade-asset-director`.
+Use `--upgrade-external` to re-install the pinned external dependencies. Use
+`--skills-dir` to select a non-default Codex Skills directory, or
+`--skip-external` when those Skills are already managed elsewhere.
 
-Use explicit sources when those Skills are not already installed:
+## Run
 
-```powershell
-python scripts/install.py `
-  --video-understand-repo <git-url> `
-  --jianying-editor-repo <git-url>
-```
-
-Do not replace a local Skill with an unrelated similarly named repository.
-Confirm the source and license first.
-
-## Run The Workflow
-
-For a new video, first prepare the analysis artifacts:
+Create analysis, a rough-cut plan, and a JianYing asset catalog:
 
 ```powershell
 python scripts/run_workflow.py `
   --video "C:\path\to\video.mp4" `
-  --srt "C:\path\to\video.srt" `
   --output-dir "work\video-job"
 ```
 
-The model must inspect the generated analysis and representative frames, then
-write a beat plan containing timestamps, spoken text, visual subject, action,
-emotion, purpose, caption zone, and PiP zone. Include beats that intentionally
-receive no effect.
-
-Use `jianying-asset-director` to catalog and score real JianYing effect IDs,
-sound-effect IDs, durations, intensity, exclusions, and style compatibility.
-Show the timestamped plan, selected assets, rejected assets, and unresolved
-decisions before modifying a draft. A request that explicitly says to proceed
-after analysis satisfies this gate; otherwise wait for confirmation.
-
-After the plan is accepted, use `jianying-editor` to create a new draft rather
-than overwrite the source draft. Keep separate audio role tracks, preserve
-subtitle and PiP layout, and use only validated library assets when the plan
-requires library assets.
-
-For a prepared beat plan, the helper can generate the asset catalog and scored
-handoff plan:
+The first pass only shortens excessive silence automatically. It produces
+`rough_cut_plan.json`, including duplicate/restart candidates that must be
+reviewed rather than silently removed. To render a reviewed rough cut, supply
+approved semantic exclusions and request a preview:
 
 ```powershell
 python scripts/run_workflow.py `
   --video "C:\path\to\video.mp4" `
-  --beats "C:\path\to\beats.json" `
+  --semantic-exclusions "work\approved_semantic_cuts.json" `
+  --render-rough-cut `
   --output-dir "work\video-job"
 ```
 
-The helper prepares artifacts; it does not guess missing semantic decisions or
-silently apply a draft.
+Then inspect the rough-cut preview, prepare timestamped visual beats for the
+accepted timeline, and pass them with `--beats` to create an asset plan. Only
+after the user accepts the cut and asset plan should `jianying-editor` create a
+new draft.
 
-## Validation Gate
+## Acceptance Gate
 
 Before delivery, verify:
 
-- all audio and video asset paths exist;
-- effect and sound-effect IDs came from the local JianYing index;
-- no generated fallback sound is present when a library asset was selected;
-- audio is below narration and does not mask speech;
-- effect timing follows the phrase/action onset;
-- subtitles, title, face PiP, and effect overlays do not collide;
-- opening frames are clean unless the plan explicitly requests an effect;
-- a rendered draft preview has been cut into review clips and inspected.
+- each semantic removal has a timestamp and reason;
+- cut boundaries do not remove words, safety language, or intentional pauses;
+- audio fades prevent clicks and narration remains intelligible;
+- the rendered output has video, audio, compatible codecs, and no black frames;
+- JianYing effects and sound effects use validated local-library IDs;
+- captions, PiP, titles, and effects do not collide.
 
-Use `check_environment.py` for machine diagnostics and the
-`jianying-asset-director` validator plus `jianying-editor` draft inspector for
-artifact checks.
-
-## Dependency Policy
-
-`jianying-asset-director` is published at:
-
-`git@github.com:yuyuyu501/jianying-asset-director.git`
-
-The current local `video-understand` and `jianying-editor` Skills do not carry
-verified public repository URLs in this environment. They are therefore
-treated as Codex-local dependencies unless the installer receives explicit
-repository URLs. This avoids publishing or downloading an unrelated project
-under the same name.
+Read `skills/talking-head-rough-cut/references/cut-policy.md` before changing
+pause thresholds. Use `jianying-asset-director` and `jianying-editor` only
+after the rough-cut plan has passed review.
