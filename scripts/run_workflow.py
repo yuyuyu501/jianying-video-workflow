@@ -73,6 +73,7 @@ def main() -> int:
     parser.add_argument("--style", default="medical_education")
     parser.add_argument("--media-decisions", type=Path, help="Reviewed media-role-director decisions JSON")
     parser.add_argument("--semantic-exclusions", type=Path, help="Reviewed cuts; use a per-source mapping when multiple narration sources exist")
+    parser.add_argument("--reference-script", type=Path, help="Approved script/copy used to audit off-topic and repeated speech")
     parser.add_argument("--render-rough-cut", action="store_true", help="Render every approved narration rough cut and then generate global captions")
     parser.add_argument("--skip-captions", action="store_true", help="Do not generate captions after rendering rough cuts")
     parser.add_argument("--rough-cut-quality", choices=("preview", "final"), default="preview")
@@ -116,6 +117,8 @@ def main() -> int:
         return 0
     if not args.media_decisions.is_file():
         raise FileNotFoundError(args.media_decisions)
+    if args.reference_script and not args.reference_script.is_file():
+        raise FileNotFoundError(args.reference_script)
 
     manifest_path = args.output_dir / "media_manifest.json"
     run([
@@ -155,6 +158,8 @@ def main() -> int:
             sys.executable, str(skills["talking-head-rough-cut"] / "scripts" / "rough_cut.py"), "plan",
             "--video", str(source["video"]), "--analysis", str(source["analysis"]), "--output", str(plan),
         ]
+        if args.reference_script:
+            plan_command.extend(["--reference-script", str(args.reference_script.resolve())])
         exclusions = source_exclusions(args.semantic_exclusions, source_id, len(speech_sources), rough_cut_dir)
         if exclusions:
             plan_command.extend(["--semantic-exclusions", str(exclusions)])
@@ -208,6 +213,7 @@ def main() -> int:
         "media_intake": str(intake_path),
         "media_manifest": str(manifest_path),
         "rough_cut_plans": {source_id: str(plan) for source_id, plan in plans.items()},
+        "reference_script": str(args.reference_script.resolve()) if args.reference_script else None,
         "rough_cut_previews": {source_id: str(preview) for source_id, preview in previews.items()},
         "captions_srt": str(args.srt.resolve()) if args.srt else (str(generated_srt) if generated_srt else None),
         "speech_timeline": str(speech_timeline) if speech_timeline else None,

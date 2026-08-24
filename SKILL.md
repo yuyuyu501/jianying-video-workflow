@@ -119,6 +119,11 @@ timestamped visual beats on that final timeline and pass them with `--beats` to
 create an asset plan. Only after the user accepts the cut and asset plan should
 `jianying-editor` create a new draft in the local draft library.
 
+When the speaker is following a supplied script, pass that script to the rough
+cut stage and review the generated script-alignment report. The rough cut must
+remove unrelated setup, false starts, repeated explanations, and on-camera
+corrections before captions or B-roll are timed.
+
 ## Draft Handoff Gate
 
 Before handing off the draft, verify:
@@ -130,12 +135,15 @@ Before handing off the draft, verify:
 - audio fades prevent clicks and narration remains intelligible;
 - `captions.srt` and `speech_timeline.json` map surviving speech to the final
   timeline and retain each source-video reference;
-- the rendered output has video, audio, compatible codecs, and no black frames;
+- the approved rough-cut preview has video, audio, compatible codecs, and no black frames;
 - JianYing effects and sound effects use validated local-library IDs;
 - captions, PiP, titles, and effects do not collide.
 
-Report the draft name and absolute draft-library path. Do not export or launch
-JianYing as part of this gate.
+Report the draft name and absolute draft-library path. A rough-cut preview is
+an intermediate review artifact, never the final deliverable. Do not create a
+full-timeline MP4 from the draft, export, or launch JianYing as part of this
+gate. MP4 export is a manual action by the user after opening the draft in
+JianYing.
 
 Read `skills/talking-head-rough-cut/references/cut-policy.md` before changing
 pause thresholds. Read `skills/media-role-director/references/contracts.md`

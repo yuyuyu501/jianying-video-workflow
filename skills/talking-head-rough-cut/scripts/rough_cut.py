@@ -78,6 +78,58 @@ def normalize_text(text: str) -> str:
     return re.sub(r"[^0-9A-Za-z\u4e00-\u9fff]", "", text).lower()
 
 
+def reference_anchor(reference_script: Path) -> str:
+    """Return the first on-topic phrase used to audit opening chatter."""
+    raw = reference_script.read_text(encoding="utf-8")
+    topic = re.search(r"(?:话题|主题)\s*[:：]\s*([^\n。！？]+)", raw)
+    if topic:
+        value = topic.group(1).strip()
+    else:
+        value = next((line.strip() for line in raw.splitlines() if line.strip()), "")
+    value = re.sub(r"^(?:文案|稿件)\s*[:：]\s*", "", value)
+    value = re.split(r"[，,；;。.!！?？]", value, maxsplit=1)[0]
+    return normalize_text(value)
+
+
+def script_alignment_candidates(analysis_path: Path | None, reference_script: Path | None) -> list[dict[str, Any]]:
+    """Find speech before the first recognizable on-topic script phrase."""
+    if not analysis_path or not analysis_path.exists() or not reference_script:
+        return []
+    transcript = read_json(analysis_path).get("transcript", [])
+    anchor = reference_anchor(reference_script)
+    if not anchor or not transcript:
+        return []
+
+    best: tuple[float, int] | None = None
+    for index, current in enumerate(transcript):
+        if float(current.get("start", 0)) > 25.0:
+            break
+        for end_index in range(index, min(len(transcript), index + 4)):
+            joined = normalize_text("".join(str(item.get("text", "")) for item in transcript[index:end_index + 1]))
+            if not joined:
+                continue
+            score = difflib.SequenceMatcher(None, anchor, joined).ratio()
+            if best is None or score > best[0]:
+                best = (score, index)
+
+    if best is None or best[0] < 0.42:
+        return []
+    first_on_topic = float(transcript[best[1]].get("start", 0))
+    if first_on_topic < 0.15:
+        return []
+    opening_text = " ".join(str(item.get("text", "")).strip() for item in transcript[:best[1]]).strip()
+    return [{
+        "start": 0.0,
+        "end": round(first_on_topic, 3),
+        "reason": "Speech before the first recognizable on-topic reference-script line",
+        "category": "off_topic",
+        "decision": "review",
+        "confidence": round(best[0], 3),
+        "matches": {"text": anchor},
+        "text": opening_text,
+    }]
+
+
 def duplicate_candidates(analysis_path: Path | None) -> list[dict[str, Any]]:
     if not analysis_path or not analysis_path.exists():
         return []
@@ -94,16 +146,43 @@ def duplicate_candidates(analysis_path: Path | None) -> list[dict[str, Any]]:
             if float(current.get("start", 0)) - float(previous.get("end", 0)) > 35:
                 continue
             ratio = difflib.SequenceMatcher(None, previous_text, current_text).ratio()
-            if ratio >= 0.88:
+            if ratio >= 0.78:
                 candidates.append({
                     "start": round(float(current["start"]), 3),
                     "end": round(float(current["end"]), 3),
-                    "reason": "Possible repeated phrase; review before removal",
+                    "reason": "Possible repeated content or emphasis; review before removal",
+                    "category": "repeat",
                     "decision": "review",
                     "confidence": round(ratio, 3),
                     "matches": {"start": previous.get("start"), "end": previous.get("end"), "text": previous.get("text", "")},
                     "text": current.get("text", ""),
                 })
+    return candidates
+
+
+FILLER_ONLY = {"嗯", "啊", "呃", "欸", "那个", "就是", "然后", "对", "这样"}
+
+
+def filler_candidates(analysis_path: Path | None) -> list[dict[str, Any]]:
+    if not analysis_path or not analysis_path.exists():
+        return []
+    transcript = read_json(analysis_path).get("transcript", [])
+    candidates = []
+    for item in transcript:
+        text = str(item.get("text", "")).strip()
+        normalized = normalize_text(text)
+        duration = float(item.get("end", 0)) - float(item.get("start", 0))
+        if normalized in FILLER_ONLY and duration <= 2.5:
+            candidates.append({
+                "start": round(float(item.get("start", 0)), 3),
+                "end": round(float(item.get("end", 0)), 3),
+                "reason": "Standalone filler or verbal dead end; review before removal",
+                "category": "filler",
+                "decision": "review",
+                "confidence": 0.8,
+                "matches": {},
+                "text": text,
+            })
     return candidates
 
 
@@ -163,6 +242,9 @@ def build_plan(args: argparse.Namespace) -> int:
     video = args.video.resolve()
     if not video.is_file():
         raise FileNotFoundError(video)
+    reference_script = args.reference_script.resolve() if args.reference_script else None
+    if reference_script and not reference_script.is_file():
+        raise FileNotFoundError(reference_script)
     media = probe(video)
     silences = find_silences(video, args.silence_db, args.silence_min)
     automatic = []
@@ -188,17 +270,24 @@ def build_plan(args: argparse.Namespace) -> int:
             "silence_min_seconds": args.silence_min,
             "preserve_air_seconds": args.preserve_air,
             "semantic_cuts_require_review": True,
+            "reference_script_required_for_script_led_edits": True,
         },
         "detected_silences": [{"start": round(start, 3), "end": round(end, 3)} for start, end in silences],
         "semantic_exclusions": semantic,
+        "reference_script": str(reference_script) if reference_script else None,
+        "script_alignment": script_alignment_candidates(args.analysis, reference_script),
         "exclusions": exclusions,
-        "review_candidates": duplicate_candidates(args.analysis),
+        "review_candidates": [
+            *script_alignment_candidates(args.analysis, reference_script),
+            *duplicate_candidates(args.analysis),
+            *filler_candidates(args.analysis),
+        ],
         "kept_ranges": kept,
         "estimated_output_duration": round(sum(item["end"] - item["start"] for item in kept), 3),
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(plan, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    emit("succeeded", "plan", output=str(args.output), source_duration=plan["source_duration"], estimated_output_duration=plan["estimated_output_duration"], removed_duration=round(media["duration"] - plan["estimated_output_duration"], 3), exclusions=len(exclusions), review_candidates=len(plan["review_candidates"]))
+    emit("succeeded", "plan", output=str(args.output), source_duration=plan["source_duration"], estimated_output_duration=plan["estimated_output_duration"], removed_duration=round(media["duration"] - plan["estimated_output_duration"], 3), exclusions=len(exclusions), review_candidates=len(plan["review_candidates"]), script_alignment_candidates=len(plan["script_alignment"]))
     return 0
 
 
@@ -295,6 +384,7 @@ def parser() -> argparse.ArgumentParser:
     plan = commands.add_parser("plan", help="Create an auditable candidate cut plan")
     plan.add_argument("--video", type=Path, required=True)
     plan.add_argument("--analysis", type=Path, help="Optional video-understand JSON")
+    plan.add_argument("--reference-script", type=Path, help="Approved script/copy used to audit opening and repeated speech")
     plan.add_argument("--semantic-exclusions", type=Path, help="Reviewed semantic removals JSON")
     plan.add_argument("--output", type=Path, required=True)
     plan.add_argument("--silence-db", type=float, default=DEFAULT_SILENCE_DB)

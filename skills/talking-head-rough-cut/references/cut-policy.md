@@ -21,6 +21,27 @@ Approve a semantic exclusion only when one of these applies:
 Do not remove qualification, uncertainty, safety language, audience questions,
 or emotional reaction merely to make the video shorter.
 
+## Script Comparison
+
+When a reference script is available, it is part of the editorial contract, not
+just a caption source. The first surviving spoken line must be the first
+on-topic line from the script. Before rendering, review every candidate in these
+categories:
+
+- `off_topic`: production chatter, greetings, setup, or dialogue unrelated to
+  the approved subject;
+- `retake`: a false start, self-correction, or abandoned sentence followed by a
+  clean take;
+- `repeat`: the same fact, instruction, or transition repeated later;
+- `filler`: standalone filler words or verbal dead ends that can be removed
+  without changing meaning;
+- `script_alignment`: speech that cannot be matched to the approved copy.
+
+The candidate report must show the source range, transcript text, matching copy
+when available, category, and decision. Only `remove` decisions supplied as
+semantic exclusions may affect the render. Safety language and the first clean
+version of an instruction take precedence over brevity.
+
 ## Semantic Exclusion Format
 
 ```json

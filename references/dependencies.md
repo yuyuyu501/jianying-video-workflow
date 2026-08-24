@@ -5,8 +5,9 @@
 - `skills/media-role-director`: classifies each source as narration, visual
   B-roll, ambient sound, music/SFX, or excluded material; it records reviewed
   audio policies and maps surviving multi-source speech to a global SRT.
-- `skills/talking-head-rough-cut`: plans conservative talking-head cuts and
-  renders accepted plans with FFmpeg.
+- `skills/talking-head-rough-cut`: compares a transcript with the supplied
+  reference script, plans conservative talking-head cuts, and renders accepted
+  rough-cut previews with FFmpeg. It is not an MP4 export stage.
 - `skills/jianying-asset-director`: catalogs and matches JianYing effects and
   sound effects after the rough cut is accepted.
 
@@ -34,6 +35,11 @@ The workflow returns an editable draft and its absolute path. MP4 export is a
 manual user operation outside the workflow. For non-mutating diagnostics use
 `draft_inspector.py`; do not run `api_validator.py`, because it creates a
 diagnostic project and its Unicode status output can fail under Windows GBK.
+
+For script-led edits, the caller must provide the reference script to the rough
+cut stage. The script is used to identify off-topic opening material, repeated
+content, false starts, and on-camera corrections. Those findings remain
+auditable candidates until approved semantic exclusions are supplied.
 
 The installer downloads source archives for these exact Git revisions. It does
 not infer repositories from Skill names. Pass `--skip-external` when another
