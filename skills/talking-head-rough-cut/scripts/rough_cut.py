@@ -11,7 +11,6 @@ import re
 import shutil
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -20,6 +19,8 @@ DEFAULT_SILENCE_DB = -25.0
 DEFAULT_SILENCE_MIN = 0.85
 DEFAULT_PRESERVE_AIR = 0.25
 MIN_REMOVAL = 0.12
+DEFAULT_MAX_SILENCE = 1.5
+DEFAULT_DURATION_TOLERANCE = 0.25
 
 
 def emit(status: str, command: str, **payload: Any) -> None:
@@ -43,7 +44,7 @@ def require_tools() -> None:
         raise RuntimeError("Missing required tools: " + ", ".join(missing))
 
 
-def probe(video: Path) -> dict[str, Any]:
+def probe(video: Path, *, require_audio: bool = True) -> dict[str, Any]:
     result = run([
         "ffprobe", "-v", "error", "-show_entries", "format=duration",
         "-show_streams", "-of", "json", str(video),
@@ -53,7 +54,7 @@ def probe(video: Path) -> dict[str, Any]:
     has_audio = any(stream.get("codec_type") == "audio" for stream in data.get("streams", []))
     if duration <= 0:
         raise RuntimeError("Video duration is missing or zero")
-    if not has_audio:
+    if require_audio and not has_audio:
         raise RuntimeError("Talking-head rough cut requires an audio stream")
     return {"duration": duration, "streams": data.get("streams", [])}
 
@@ -67,6 +68,35 @@ def find_silences(video: Path, noise_db: float, minimum_seconds: float) -> list[
     starts = [float(value) for value in re.findall(r"silence_start:\s*([0-9.]+)", result.stderr)]
     ends = [float(value) for value in re.findall(r"silence_end:\s*([0-9.]+)", result.stderr)]
     return [(start, end) for start, end in zip(starts, ends) if end > start]
+
+
+def audio_duration(media: dict[str, Any]) -> float:
+    for stream in media.get("streams", []):
+        if stream.get("codec_type") != "audio":
+            continue
+        try:
+            value = float(stream.get("duration", 0.0))
+        except (TypeError, ValueError):
+            value = 0.0
+        if value > 0:
+            return value
+    return float(media["duration"])
+
+
+def audio_qc(path: Path, expected_duration: float, max_silence: float) -> dict[str, Any]:
+    media = probe(path)
+    duration = audio_duration(media)
+    silences = find_silences(path, -45.0, max_silence)
+    silence_duration = sum(end - start for start, end in silences)
+    active_duration = max(0.0, duration - silence_duration)
+    return {
+        "path": str(path),
+        "duration": round(duration, 3),
+        "expected_duration": round(expected_duration, 3),
+        "duration_delta": round(duration - expected_duration, 3),
+        "active_duration": round(active_duration, 3),
+        "long_silences": [{"start": round(start, 3), "end": round(end, 3)} for start, end in silences],
+    }
 
 
 def read_json(path: Path) -> Any:
@@ -339,8 +369,27 @@ def build_plan(args: argparse.Namespace) -> int:
     return 0
 
 
-def ffmpeg_quote(path: Path) -> str:
-    return str(path.resolve()).replace("'", "\\\\'")
+def artifact_paths(output: Path, args: argparse.Namespace) -> tuple[Path, Path]:
+    visual = args.visual_output.resolve() if args.visual_output else output.with_name(f"{output.stem}.visual.mp4")
+    narration = args.narration_output.resolve() if args.narration_output else output.with_name(f"{output.stem}.narration.m4a")
+    return visual, narration
+
+
+def render_filter_graph(ranges: list[dict[str, Any]]) -> str:
+    chains: list[str] = []
+    inputs: list[str] = []
+    for index, item in enumerate(ranges):
+        start, end = float(item["start"]), float(item["end"])
+        duration = end - start
+        fade_out = max(0.0, duration - 0.03)
+        chains.extend([
+            f"[0:v]trim=start={start:.6f}:end={end:.6f},setpts=PTS-STARTPTS,fps=30,format=yuv420p[v{index}]",
+            f"[0:a]atrim=start={start:.6f}:end={end:.6f},asetpts=PTS-STARTPTS,aresample=48000,afade=t=in:st=0:d=0.03,afade=t=out:st={fade_out:.6f}:d=0.03[a{index}]",
+        ])
+        inputs.extend([f"[v{index}]", f"[a{index}]"])
+    chains.append("".join(inputs) + f"concat=n={len(ranges)}:v=1:a=1[visual][narration_raw]")
+    chains.append("[narration_raw]loudnorm=I=-16:TP=-1.5:LRA=11[narration]")
+    return ";".join(chains)
 
 
 def render_plan(args: argparse.Namespace) -> int:
@@ -356,42 +405,27 @@ def render_plan(args: argparse.Namespace) -> int:
     if output.exists() and not args.overwrite:
         raise FileExistsError(f"Output already exists: {output}. Pass --overwrite to replace it.")
     output.parent.mkdir(parents=True, exist_ok=True)
-    work_dir = Path(tempfile.mkdtemp(prefix=f"{output.stem}-rough-cut-", dir=output.parent))
+    visual, narration = artifact_paths(output, args)
+    for artifact in (visual, narration):
+        if artifact.exists() and not args.overwrite:
+            raise FileExistsError(f"Output already exists: {artifact}. Pass --overwrite to replace it.")
     crf = "22" if args.quality == "preview" else "19"
-    segments: list[Path] = []
-    for index, item in enumerate(ranges):
-        start, end = float(item["start"]), float(item["end"])
-        duration = end - start
-        if duration < 0.18:
-            continue
-        segment = work_dir / f"segment_{index:03d}.mp4"
-        fade_out = max(0.0, duration - 0.03)
-        run([
-            "ffmpeg", "-y", "-hide_banner", "-nostdin", "-i", str(source),
-            "-ss", f"{start:.3f}", "-t", f"{duration:.3f}",
-            "-map", "0:v:0", "-map", "0:a:0",
-            "-vf", "fps=30,format=yuv420p",
-            "-af", f"aresample=async=1:first_pts=0,afade=t=in:st=0:d=0.03,afade=t=out:st={fade_out:.3f}:d=0.03",
-            "-c:v", "libx264", "-preset", "fast", "-crf", crf,
-            "-c:a", "aac", "-b:a", "192k", "-ar", "48000",
-            "-avoid_negative_ts", "make_zero", str(segment),
-        ])
-        segments.append(segment)
-    if not segments:
+    ranges = [item for item in ranges if float(item["end"]) - float(item["start"]) >= 0.18]
+    if not ranges:
         raise ValueError("No renderable kept ranges")
-    concat_list = work_dir / "concat.txt"
-    concat_list.write_text("".join(f"file '{ffmpeg_quote(path)}'\n" for path in segments), encoding="utf-8")
-    base = work_dir / "base.mp4"
-    run(["ffmpeg", "-y", "-hide_banner", "-nostdin", "-f", "concat", "-safe", "0", "-i", str(concat_list), "-c", "copy", str(base)])
     run([
-        "ffmpeg", "-y", "-hide_banner", "-nostdin", "-i", str(base),
-        "-af", "aresample=async=1:first_pts=0,loudnorm=I=-16:TP=-1.5:LRA=11",
-        "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-ar", "48000",
-        "-avoid_negative_ts", "make_zero", "-movflags", "+faststart", str(output),
+        "ffmpeg", "-y", "-hide_banner", "-nostdin", "-i", str(source),
+        "-filter_complex", render_filter_graph(ranges),
+        "-map", "[visual]", "-an", "-c:v", "libx264", "-preset", "fast", "-crf", crf,
+        "-movflags", "+faststart", str(visual),
+        "-map", "[narration]", "-vn", "-c:a", "aac", "-b:a", "192k", "-ar", "48000", str(narration),
+    ])
+    run([
+        "ffmpeg", "-y", "-hide_banner", "-nostdin", "-i", str(visual), "-i", str(narration),
+        "-map", "0:v:0", "-map", "1:a:0", "-c", "copy", "-movflags", "+faststart", str(output),
     ])
     output_duration = probe(output)["duration"]
-    shutil.rmtree(work_dir)
-    emit("succeeded", "render", output=str(output), duration=round(output_duration, 3), segments=len(segments), temporary_artifacts_removed=True)
+    emit("succeeded", "render", output=str(output), visual=str(visual), narration=str(narration), duration=round(output_duration, 3), segments=len(ranges))
     return 0
 
 
@@ -415,14 +449,62 @@ def validate_plan(args: argparse.Namespace) -> int:
             errors.append(f"Overlapping kept range at index {index}")
         previous_end = end
     output_metrics = None
+    expected_duration = sum(float(item["end"]) - float(item["start"]) for item in ranges)
     if args.output:
         if not args.output.is_file():
             errors.append(f"Rendered output does not exist: {args.output}")
         else:
             media = probe(args.output)
             output_metrics = {"duration": round(media["duration"], 3), "has_audio": True}
-    status = "succeeded" if not errors else "failed"
-    emit(status, "validate", plan=str(args.plan), output=str(args.output) if args.output else None, kept_ranges=len(ranges), output_metrics=output_metrics, errors=errors)
+            if abs(media["duration"] - expected_duration) > DEFAULT_DURATION_TOLERANCE:
+                errors.append("Review duration differs from EDL duration")
+    narration_report = None
+    if args.narration:
+        if not args.narration.is_file():
+            errors.append(f"Narration file does not exist: {args.narration}")
+        else:
+            narration_report = audio_qc(args.narration, expected_duration, args.max_silence)
+            if abs(narration_report["duration_delta"]) > DEFAULT_DURATION_TOLERANCE:
+                errors.append("Narration duration differs from EDL duration")
+            if narration_report["long_silences"]:
+                errors.append("Narration contains an unplanned long silence")
+            if narration_report["active_duration"] < min(2.0, expected_duration * 0.05):
+                errors.append("Narration has insufficient audible content")
+    else:
+        errors.append("Validated narration output is required")
+    visual_report = None
+    if args.visual:
+        if not args.visual.is_file():
+            errors.append(f"Visual file does not exist: {args.visual}")
+        else:
+            visual_media = probe(args.visual, require_audio=False)
+            visual_report = {"path": str(args.visual), "duration": round(visual_media["duration"], 3), "has_audio": any(stream.get("codec_type") == "audio" for stream in visual_media["streams"])}
+            if visual_report["has_audio"]:
+                errors.append("Visual rough cut must not contain an embedded audio stream")
+            if abs(visual_media["duration"] - expected_duration) > DEFAULT_DURATION_TOLERANCE:
+                errors.append("Visual duration differs from EDL duration")
+    else:
+        errors.append("Validated visual output is required")
+    report = {
+        "expected_duration": round(expected_duration, 3),
+        "review": output_metrics,
+        "narration": narration_report,
+        "visual": visual_report,
+        "errors": errors,
+    }
+    report["status"] = "succeeded" if not errors else "failed"
+    if args.qc_output:
+        args.qc_output.parent.mkdir(parents=True, exist_ok=True)
+        args.qc_output.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    status = report["status"]
+    emit(
+        status,
+        "validate",
+        plan=str(args.plan),
+        output=str(args.output) if args.output else None,
+        kept_ranges=len(ranges),
+        **{key: value for key, value in report.items() if key != "status"},
+    )
     return 0 if not errors else 2
 
 
@@ -441,13 +523,19 @@ def parser() -> argparse.ArgumentParser:
     plan.set_defaults(handler=build_plan)
     render = commands.add_parser("render", help="Render an accepted plan with FFmpeg")
     render.add_argument("--plan", type=Path, required=True)
-    render.add_argument("--output", type=Path, required=True)
+    render.add_argument("--output", type=Path, required=True, help="Review MP4 muxed from the visual and narration artifacts")
+    render.add_argument("--visual-output", type=Path, help="Silent visual rough-cut MP4; defaults beside --output")
+    render.add_argument("--narration-output", type=Path, help="Narration-only M4A; defaults beside --output")
     render.add_argument("--quality", choices=("preview", "final"), default="preview")
     render.add_argument("--overwrite", action="store_true")
     render.set_defaults(handler=render_plan)
     validate = commands.add_parser("validate", help="Validate plan ranges and optional rendered output")
     validate.add_argument("--plan", type=Path, required=True)
     validate.add_argument("--output", type=Path)
+    validate.add_argument("--visual", type=Path, required=True)
+    validate.add_argument("--narration", type=Path, required=True)
+    validate.add_argument("--max-silence", type=float, default=DEFAULT_MAX_SILENCE)
+    validate.add_argument("--qc-output", type=Path, help="Write a machine-readable audio/video QC report")
     validate.set_defaults(handler=validate_plan)
     return root
 

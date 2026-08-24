@@ -22,8 +22,10 @@ clip is not the primary talking head.
 4. Send only sources whose role is `primary_narration` or `secondary_speech`
    and whose `audio_policy` is `keep_original` to `talking-head-rough-cut`.
    Keep B-roll visually available, but set `broll_visual` clips to `mute`.
-5. After approved rough-cut plans exist, attach them to the manifest and run
-   `captions`. This produces a final-timeline `captions.srt` and a
+5. Render every approved narration plan into a silent visual MP4, narration
+   M4A, review MP4, and successful QC report. Attach that full artifact set to
+   the manifest, then run `captions`. A plan alone never authorizes caption
+   generation. This produces a final-timeline `captions.srt` and a
    `speech_timeline.json` source mapping for `jianying-asset-director`.
 
 ## Roles And Audio Policies

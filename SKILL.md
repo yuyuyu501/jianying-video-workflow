@@ -15,7 +15,7 @@ video-understand (external)
 -> media-role-director (bundled)
 -> reviewed source roles and audio policies
 -> talking-head-rough-cut (bundled) + FFmpeg
--> approved speech-first rough cut
+-> validated silent visual + independent narration + review MP4
 -> global captions.srt + speech_timeline.json
 -> jianying-asset-director (bundled)
 -> effect and sound-effect plan
@@ -101,8 +101,11 @@ The role director mutes only reviewed `broll_visual` sources; it preserves or
 routes useful ambient audio explicitly.
 
 To render reviewed narration rough cuts and generate the final-timeline
-`captions.srt` plus `speech_timeline.json`, supply the decisions file. For more
-than one narration source, semantic exclusions are keyed by source ID.
+`captions.srt` plus `speech_timeline.json`, supply the decisions file. Every
+accepted cut produces a silent visual MP4, a narration-only M4A, a review MP4,
+and a QC report. The workflow stops before captions when audio duration,
+continuity, or audible-content checks fail. For more than one narration source,
+semantic exclusions are keyed by source ID.
 
 ```powershell
 python scripts/run_workflow.py `
@@ -133,9 +136,13 @@ Before handing off the draft, verify:
   muted only when its original audio is editorially irrelevant;
 - cut boundaries do not remove words, safety language, or intentional pauses;
 - audio fades prevent clicks and narration remains intelligible;
+- the narration M4A, silent visual MP4, and review MP4 all match the approved
+  EDL within audio-frame tolerance; narration has no unplanned long silence;
 - `captions.srt` and `speech_timeline.json` map surviving speech to the final
   timeline and retain each source-video reference;
-- the approved rough-cut preview has video, audio, compatible codecs, and no black frames;
+- the approved rough-cut review has video, audio, compatible codecs, and no black frames;
+- the JianYing draft imports the silent visual on a video track and the
+  validated narration on a named audio track; visual-only B-roll is explicitly muted;
 - JianYing effects and sound effects use validated local-library IDs;
 - every effect-track segment references a real `materials.video_effects` entry;
 - captions, PiP, titles, and effects do not collide.
@@ -148,6 +155,13 @@ validate the saved draft before handoff:
 
 ```powershell
 python scripts/validate_draft_effects.py --draft-name "DraftName" --expected-count 10
+```
+
+For speech-led drafts, import the silent visual rough cut and the validated
+narration M4A on separate tracks. Validate narration coverage before handoff:
+
+```powershell
+python scripts/validate_draft_narration.py --draft-name "DraftName" --expected-duration 340.847
 ```
 
 Report the draft name and absolute draft-library path. A rough-cut preview is

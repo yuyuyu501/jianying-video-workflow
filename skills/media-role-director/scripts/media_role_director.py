@@ -202,20 +202,49 @@ def attach_rough_cuts(args: argparse.Namespace) -> int:
     manifest_path = args.manifest.resolve()
     manifest = read_json(manifest_path)
     sources = {source["id"]: source for source in manifest.get("sources", [])}
-    for mapping in args.rough_cut:
-        source_id_value, separator, plan_value = mapping.partition("=")
-        if not separator or not source_id_value or not plan_value:
-            raise ValueError("--rough-cut must use SOURCE_ID=PLAN_PATH")
-        if source_id_value not in sources:
-            raise ValueError(f"Unknown source_id: {source_id_value}")
-        plan = Path(plan_value).expanduser().resolve()
-        if not plan.is_file():
-            raise FileNotFoundError(plan)
-        sources[source_id_value]["rough_cut_plan"] = str(plan)
+    def parse_mappings(values: list[str], label: str) -> dict[str, Path]:
+        mapped: dict[str, Path] = {}
+        for mapping in values:
+            source_id_value, separator, path_value = mapping.partition("=")
+            if not separator or not source_id_value or not path_value:
+                raise ValueError(f"{label} must use SOURCE_ID=PATH")
+            if source_id_value not in sources:
+                raise ValueError(f"Unknown source_id: {source_id_value}")
+            path = Path(path_value).expanduser().resolve()
+            if not path.is_file():
+                raise FileNotFoundError(path)
+            mapped[source_id_value] = path
+        return mapped
+
+    plans = parse_mappings(args.rough_cut, "--rough-cut")
+    visuals = parse_mappings(args.rough_cut_visual, "--rough-cut-visual")
+    narrations = parse_mappings(args.rough_cut_narration, "--rough-cut-narration")
+    reviews = parse_mappings(args.rough_cut_review, "--rough-cut-review")
+    qc_reports = parse_mappings(args.rough_cut_qc, "--rough-cut-qc")
     required = [source["id"] for source in sources.values() if source.get("decision", {}).get("requires_rough_cut")]
-    missing = [source_id_value for source_id_value in required if not sources[source_id_value].get("rough_cut_plan")]
+    missing = [source_id_value for source_id_value in required if source_id_value not in plans or source_id_value not in visuals or source_id_value not in narrations or source_id_value not in reviews or source_id_value not in qc_reports]
     if missing:
-        raise ValueError("Missing rough-cut plans for: " + ", ".join(missing))
+        raise ValueError("Missing validated rough-cut artifacts for: " + ", ".join(missing))
+    for source_id_value, plan in plans.items():
+        sources[source_id_value]["rough_cut_plan"] = str(plan)
+        source = sources[source_id_value]
+        source["rough_cut_artifacts"] = {
+            "visual": str(visuals[source_id_value]),
+            "narration": str(narrations[source_id_value]),
+            "review": str(reviews[source_id_value]),
+            "qc": str(qc_reports[source_id_value]),
+        }
+        qc = read_json(qc_reports[source_id_value])
+        if qc.get("status") != "succeeded" or qc.get("errors"):
+            raise ValueError(f"{source_id_value}: rough-cut QC did not pass")
+        qc_narration = Path(str(qc.get("narration", {}).get("path", ""))).resolve()
+        qc_visual = Path(str(qc.get("visual", {}).get("path", ""))).resolve()
+        if qc_narration != narrations[source_id_value]:
+            raise ValueError(f"{source_id_value}: rough-cut QC does not belong to the supplied narration artifact")
+        if qc_visual != visuals[source_id_value]:
+            raise ValueError(f"{source_id_value}: rough-cut QC does not belong to the supplied visual artifact")
+        if qc.get("narration", {}).get("long_silences"):
+            raise ValueError(f"{source_id_value}: rough-cut narration contains unplanned long silence")
     output = args.output.resolve() if args.output else manifest_path
     write_json(output, manifest)
     emit("succeeded", "attach-rough-cuts", output=str(output), rough_cut_sources=required)
@@ -236,6 +265,18 @@ def kept_ranges(source: dict[str, Any]) -> list[dict[str, float]]:
         if end > start:
             normalized.append({"start": start, "end": end})
     return normalized
+
+
+def require_validated_rough_cut(source: dict[str, Any]) -> None:
+    artifacts = source.get("rough_cut_artifacts")
+    if not isinstance(artifacts, dict):
+        raise ValueError(f"{source['id']}: validated rough-cut artifacts are required before captions")
+    for key in ("visual", "narration", "review", "qc"):
+        if not Path(str(artifacts.get(key, ""))).is_file():
+            raise FileNotFoundError(f"{source['id']}: missing rough-cut {key} artifact")
+    qc = read_json(Path(artifacts["qc"]))
+    if qc.get("status") != "succeeded" or qc.get("errors"):
+        raise ValueError(f"{source['id']}: rough-cut QC must pass before captions")
 
 
 def srt_time(seconds: float) -> str:
@@ -261,6 +302,7 @@ def captions(args: argparse.Namespace) -> int:
     entries: list[dict[str, Any]] = []
     cursor = 0.0
     for source in speech_sources:
+        require_validated_rough_cut(source)
         analysis = read_json(Path(source["analysis"]))
         transcript = analysis.get("transcript", [])
         ranges = kept_ranges(source)
@@ -312,7 +354,12 @@ def captions(args: argparse.Namespace) -> int:
         "duration": round(cursor, 3),
         "captions": entries,
         "speech_sources": [
-            {"source_id": source["id"], "timeline_order": source["decision"]["timeline_order"], "rough_cut_plan": source["rough_cut_plan"]}
+            {
+                "source_id": source["id"],
+                "timeline_order": source["decision"]["timeline_order"],
+                "rough_cut_plan": source["rough_cut_plan"],
+                "rough_cut_artifacts": source["rough_cut_artifacts"],
+            }
             for source in speech_sources
         ],
     }
@@ -354,6 +401,10 @@ def parser() -> argparse.ArgumentParser:
     attach_parser = commands.add_parser("attach-rough-cuts", help="Attach approved rough-cut plans to a media manifest")
     attach_parser.add_argument("--manifest", type=Path, required=True)
     attach_parser.add_argument("--rough-cut", action="append", required=True, help="SOURCE_ID=PLAN_PATH")
+    attach_parser.add_argument("--rough-cut-visual", action="append", required=True, help="SOURCE_ID=SILENT_VIDEO_PATH")
+    attach_parser.add_argument("--rough-cut-narration", action="append", required=True, help="SOURCE_ID=NARRATION_AUDIO_PATH")
+    attach_parser.add_argument("--rough-cut-review", action="append", required=True, help="SOURCE_ID=REVIEW_MP4_PATH")
+    attach_parser.add_argument("--rough-cut-qc", action="append", required=True, help="SOURCE_ID=QC_JSON_PATH")
     attach_parser.add_argument("--output", type=Path)
     attach_parser.set_defaults(handler=attach_rough_cuts)
     captions_parser = commands.add_parser("captions", help="Create final-timeline SRT and source mapping")

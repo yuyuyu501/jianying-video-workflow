@@ -37,9 +37,17 @@ audio role must set `review_required` to `true`.
 ## Manifest And Captions
 
 `media_manifest.json` preserves the input video and `video-understand` output
-for each source, together with the reviewed decision. After rough-cut plans
-are attached, `captions` uses the kept source ranges to map transcript segments
-onto the compressed global speech timeline.
+for each source, together with the reviewed decision. A narration source is
+ready for captions only after its rough-cut plan is accompanied by four
+validated artifacts: `visual` (silent MP4), `narration` (M4A), `review`
+(muxed MP4), and `qc` (successful JSON report). `captions` then uses the kept
+source ranges to map transcript segments onto the compressed global speech
+timeline.
+
+The visual and narration files are separate on purpose. Draft assembly imports
+the visual on a video track and narration on a named audio track; B-roll must
+not provide narration audio. A QC report with an error, a missing narration
+artifact, or an unplanned long silence blocks caption generation.
 
 It writes two files:
 

@@ -24,9 +24,10 @@ current job directory.
    `--semantic-exclusions`.
 5. Show the plan before rendering unless the user has explicitly requested the
    edit to proceed. State removed duration and reasons for every semantic cut.
-6. Render the accepted plan with `scripts/rough_cut.py render`, then run
-   `validate`. Inspect the opening, every cut boundary, and the end of the
-   rendered video.
+6. Render the accepted plan with `scripts/rough_cut.py render`. It must produce
+   a silent visual MP4, a narration-only M4A, and a muxed review MP4 from the
+   same EDL. Run `validate` before any captions, effects, or draft creation.
+   Inspect the opening, every cut boundary, and the end of the review MP4.
 
 ## Cut Rules
 
@@ -53,8 +54,12 @@ current job directory.
 - Record a reason and source timestamp for every semantic removal. Mark
   ambiguous material as `review`, not `remove`.
 - Apply 30 ms audio fades at every retained-range boundary and normalize the
-  final audio. Do not overwrite the source or an existing output without an
-  explicit `--overwrite`.
+  narration. Do not use segment-file copy concatenation for speech audio: use
+  one EDL-driven filter graph so every retained range has continuous timestamps.
+- Treat visual and narration as separate deliverables. The visual file must
+  contain no audio stream; the narration file must cover the final EDL without
+  unplanned long silences. Do not overwrite the source or an existing output
+  without an explicit `--overwrite`.
 
 ## Commands
 
@@ -76,11 +81,16 @@ python scripts/rough_cut.py plan `
 
 python scripts/rough_cut.py render `
   --plan "work\rough_cut_plan.json" `
-  --output "work\rough_cut_preview.mp4"
+  --output "work\rough_cut_review.mp4" `
+  --visual-output "work\rough_cut.visual.mp4" `
+  --narration-output "work\rough_cut.narration.m4a"
 
 python scripts/rough_cut.py validate `
   --plan "work\rough_cut_plan.json" `
-  --output "work\rough_cut_preview.mp4"
+  --output "work\rough_cut_review.mp4" `
+  --visual "work\rough_cut.visual.mp4" `
+  --narration "work\rough_cut.narration.m4a" `
+  --qc-output "work\rough_cut.qc.json"
 ```
 
 Read [references/cut-policy.md](references/cut-policy.md) before changing the

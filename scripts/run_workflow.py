@@ -151,6 +151,9 @@ def main() -> int:
     rough_cut_dir = args.output_dir / "rough-cuts"
     plans: dict[str, Path] = {}
     previews: dict[str, Path] = {}
+    visuals: dict[str, Path] = {}
+    narrations: dict[str, Path] = {}
+    qc_reports: dict[str, Path] = {}
     for source in speech_sources:
         source_id = str(source["id"])
         plan = rough_cut_dir / f"{source_id}.plan.json"
@@ -167,15 +170,32 @@ def main() -> int:
         plans[source_id] = plan
         if args.render_rough_cut:
             preview = rough_cut_dir / f"{source_id}.mp4"
+            visual = rough_cut_dir / f"{source_id}.visual.mp4"
+            narration = rough_cut_dir / f"{source_id}.narration.m4a"
+            qc_report = rough_cut_dir / f"{source_id}.qc.json"
             run([
                 sys.executable, str(skills["talking-head-rough-cut"] / "scripts" / "rough_cut.py"), "render",
-                "--plan", str(plan), "--output", str(preview), "--quality", args.rough_cut_quality, "--overwrite",
+                "--plan", str(plan), "--output", str(preview), "--visual-output", str(visual),
+                "--narration-output", str(narration), "--quality", args.rough_cut_quality, "--overwrite",
             ])
             run([
                 sys.executable, str(skills["talking-head-rough-cut"] / "scripts" / "rough_cut.py"), "validate",
-                "--plan", str(plan), "--output", str(preview),
+                "--plan", str(plan), "--output", str(preview), "--visual", str(visual),
+                "--narration", str(narration), "--qc-output", str(qc_report),
             ])
             previews[source_id] = preview
+            visuals[source_id] = visual
+            narrations[source_id] = narration
+            qc_reports[source_id] = qc_report
+
+    if not args.render_rough_cut:
+        print("RESULT: " + json.dumps({
+            "status": "review_required",
+            "media_manifest": str(manifest_path),
+            "rough_cut_plans": {source_id: str(plan) for source_id, plan in plans.items()},
+            "next_step": "Render each approved rough-cut plan into silent visual, narration, and review artifacts, then pass rough-cut QC before captions or draft creation.",
+        }, ensure_ascii=False))
+        return 0
 
     attach_command = [
         sys.executable, str(skills["media-role-director"] / "scripts" / "media_role_director.py"), "attach-rough-cuts",
@@ -183,6 +203,13 @@ def main() -> int:
     ]
     for source_id, plan in plans.items():
         attach_command.extend(["--rough-cut", f"{source_id}={plan}"])
+        if args.render_rough_cut:
+            attach_command.extend([
+                "--rough-cut-visual", f"{source_id}={visuals[source_id]}",
+                "--rough-cut-narration", f"{source_id}={narrations[source_id]}",
+                "--rough-cut-review", f"{source_id}={previews[source_id]}",
+                "--rough-cut-qc", f"{source_id}={qc_reports[source_id]}",
+            ])
     run(attach_command)
 
     generated_srt = None
@@ -215,6 +242,15 @@ def main() -> int:
         "rough_cut_plans": {source_id: str(plan) for source_id, plan in plans.items()},
         "reference_script": str(args.reference_script.resolve()) if args.reference_script else None,
         "rough_cut_previews": {source_id: str(preview) for source_id, preview in previews.items()},
+        "rough_cut_artifacts": {
+            source_id: {
+                "visual": str(visuals[source_id]),
+                "narration": str(narrations[source_id]),
+                "review": str(previews[source_id]),
+                "qc": str(qc_reports[source_id]),
+            }
+            for source_id in previews
+        },
         "captions_srt": str(args.srt.resolve()) if args.srt else (str(generated_srt) if generated_srt else None),
         "speech_timeline": str(speech_timeline) if speech_timeline else None,
         "asset_catalog": str(catalog_json),
