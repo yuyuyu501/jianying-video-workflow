@@ -137,7 +137,18 @@ Before handing off the draft, verify:
   timeline and retain each source-video reference;
 - the approved rough-cut preview has video, audio, compatible codecs, and no black frames;
 - JianYing effects and sound effects use validated local-library IDs;
+- every effect-track segment references a real `materials.video_effects` entry;
 - captions, PiP, titles, and effects do not collide.
+
+Do not use `JyProject.add_effect_simple` to create a JianYing effect track: it
+can leave timeline placeholders without a `video_effect` material. Resolve the
+approved asset name through `pyJianYingDraft.VideoSceneEffectType` and call
+`project.script.add_effect(...)` with a `Timerange` on an effect track. Then
+validate the saved draft before handoff:
+
+```powershell
+python scripts/validate_draft_effects.py --draft-name "DraftName" --expected-count 10
+```
 
 Report the draft name and absolute draft-library path. A rough-cut preview is
 an intermediate review artifact, never the final deliverable. Do not create a
