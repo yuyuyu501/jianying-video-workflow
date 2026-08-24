@@ -113,6 +113,24 @@ def script_alignment_candidates(analysis_path: Path | None, reference_script: Pa
                 best = (score, index)
 
     if best is None or best[0] < 0.42:
+        # ASR can corrupt a short opening phrase. A first utterance followed by
+        # a clear gap is still useful as a conservative setup-chatter review
+        # candidate; it is never removed without an approved exclusion.
+        first = transcript[0]
+        if float(first.get("start", 0)) <= 0.15 and len(transcript) > 1:
+            next_start = float(transcript[1].get("start", 0))
+            first_end = float(first.get("end", 0))
+            if next_start - first_end >= 0.5:
+                return [{
+                    "start": round(float(first.get("start", 0)), 3),
+                    "end": round(next_start, 3),
+                    "reason": "Possible production/setup speech before the first topic line; review against the reference script",
+                    "category": "off_topic",
+                    "decision": "review",
+                    "confidence": 0.5,
+                    "matches": {"text": anchor},
+                    "text": str(first.get("text", "")),
+                }]
         return []
     first_on_topic = float(transcript[best[1]].get("start", 0))
     if first_on_topic < 0.15:
@@ -183,6 +201,35 @@ def filler_candidates(analysis_path: Path | None) -> list[dict[str, Any]]:
                 "matches": {},
                 "text": text,
             })
+    return candidates
+
+
+CORRECTION_MARKERS = ("不对", "不是", "应该是", "改一下", "重来", "重新", "普通话", "再说一遍", "刚才")
+
+
+def retake_candidates(analysis_path: Path | None) -> list[dict[str, Any]]:
+    """Flag explicit on-camera corrections for contextual review."""
+    if not analysis_path or not analysis_path.exists():
+        return []
+    transcript = read_json(analysis_path).get("transcript", [])
+    candidates = []
+    for index, item in enumerate(transcript):
+        text = str(item.get("text", "")).strip()
+        if not any(marker in text for marker in CORRECTION_MARKERS):
+            continue
+        end = float(item.get("end", 0))
+        if index + 1 < len(transcript):
+            end = max(end, float(transcript[index + 1].get("end", end)))
+        candidates.append({
+            "start": round(float(item.get("start", 0)), 3),
+            "end": round(end, 3),
+            "reason": "Possible on-camera correction or retake; review the adjacent clean take",
+            "category": "retake",
+            "decision": "review",
+            "confidence": 0.75,
+            "matches": {},
+            "text": text,
+        })
     return candidates
 
 
@@ -281,6 +328,7 @@ def build_plan(args: argparse.Namespace) -> int:
             *script_alignment_candidates(args.analysis, reference_script),
             *duplicate_candidates(args.analysis),
             *filler_candidates(args.analysis),
+            *retake_candidates(args.analysis),
         ],
         "kept_ranges": kept,
         "estimated_output_duration": round(sum(item["end"] - item["start"] for item in kept), 3),
