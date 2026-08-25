@@ -1,5 +1,5 @@
 {
-  "version": 2,
+  "version": 3,
   "selection": {
     "visual": {
       "candidate_limit": 15,
@@ -13,6 +13,13 @@
       "min_score": 2.0,
       "max_same_effect_per_plan": 2,
       "repeat_cooldown_seconds": 30.0,
+      "allow_no_effect": true
+    },
+    "character": {
+      "candidate_limit": 8,
+      "min_score": 2.0,
+      "max_same_effect_per_plan": 1,
+      "repeat_cooldown_seconds": 90.0,
       "allow_no_effect": true
     }
   },
@@ -78,6 +85,11 @@
       "preferred": ["notification", "emergency", "confirmation"],
       "forbidden": ["comedy", "cartoon", "celebration", "fireworks"],
       "max_duration": 1.4
+    },
+    "general": {
+      "preferred": ["person", "restrained", "highlight", "confirmation"],
+      "forbidden": ["cartoon", "comedy", "celebration", "fireworks"],
+      "max_duration": 1.0
     }
   },
   "asset_tags": {

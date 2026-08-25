@@ -51,26 +51,35 @@ plan has been shown to the user.
    `null` for no effect. Apply this response using the `select` command; the
    command rejects invented IDs, duplicate beat decisions, excessive reuse,
    and effects within the configured cooldown window.
-7. **Preview gate**: create short previews for every non-trivial candidate,
+7. **Character-effect selection**: then use `character_candidates` as a
+   separate decision. A beat is eligible only when analysis confirms a visible
+   person/face and no full-height B-roll hides the main speaker. The AI selects
+   one shortlist ID or `null`; code enforces a face-target zone, one-use default,
+   and a stricter cooldown.
+8. **Preview gate**: create short previews for every non-trivial candidate,
    including captions, PiP, and the candidate audio. Inspect the actual visual
    result and waveform/loudness. Do not use names alone to judge an asset.
    A preview video may be rendered from the source assets before draft creation
    or supplied by the user. Never export a JianYing draft automatically. For a
    supplied preview, extract review clips with:
    `python scripts/asset_director.py preview --video rendered_preview.mp4 --plan plan.json --output-dir preview/`.
-8. **User gate**: output the timestamped plan, selected assets, rejected
+9. **User gate**: output the timestamped plan, selected assets, rejected
    candidates, and unresolved decisions. If the user has asked to proceed,
    continue; otherwise wait for confirmation.
-9. **Build**: call `jianying-editor` in draft-library-only mode to create a
+10. **Build**: call `jianying-editor` in draft-library-only mode to create a
    new draft. Do not launch JianYing, automate its UI, invoke
    `JianyingController`, or call an exporter. Use separate tracks for effects
    and each audio role. Keep source asset IDs, local cache paths, and the
    absolute draft path in the build report.
-10. **Validate**: run `scripts/asset_director.py validate` and the
+11. **Validate**: run `scripts/asset_director.py validate` and the
    `jianying-editor` draft inspector. Check asset existence, effect/audio
    timing, volume, overlap with captions/PiP, opening cleanliness, and that
    the draft contains no generated fallback sound when a library asset was
-   selected. This structural validation is the workflow's endpoint; the user
+   selected. Structural composition QC also requires named `Effects` and
+   `CharacterEffects` tracks, correct `video_effect` / `face_effect` material
+   types, approved resource IDs, and no person effect on hidden-person beats.
+   It cannot prove rendered JianYing pixels, so the user must visually inspect
+   the effect in the draft before export. This structural validation is the workflow's endpoint; the user
    manually opens and exports the draft outside the workflow.
 
 ## Matching Rules
@@ -127,6 +136,7 @@ The plan passed to `jianying-editor` must include:
   "speech_timeline": "absolute path to speech_timeline.json",
   "beats": [{"start": 10.66, "end": 15.78, "purpose": "warning", "assets": []}],
   "visual_effects": [{"asset_id": "real_resource_id", "resource_id": "real_resource_id", "source_identifier": "剪映特效名称", "name": "...", "start": 10.66, "duration": 0.8, "zone": "full_frame", "score": 0.0}],
+  "character_effects": [{"asset_id": "real_face_resource_id", "resource_id": "real_face_resource_id", "source_identifier": "人物特效名称", "name": "...", "start": 10.66, "duration": 0.8, "zone": "face_target", "beat_id": "warning-01"}],
   "sound_effects": [{"asset_id": "...", "name": "...", "start": 10.66, "duration": 0.7, "track": "SFX_Danger", "volume": 0.12, "score": 0.0}],
   "rejected": [{"asset_id": "...", "reason": "cartoon asset forbidden for medical warning"}],
   "preview_required": true,
@@ -145,6 +155,7 @@ decision before draft creation:
     {
       "beat_id": "warning-01",
       "visual_asset_id": "real_resource_id_from_visual_candidates",
+      "character_asset_id": null,
       "sound_asset_id": null,
       "reason": "The frame and phrase need a brief restrained warning accent."
     }
@@ -166,7 +177,9 @@ python scripts/asset_director.py validate `
 For a selected visual effect, `asset_id` and `resource_id` are the true
 JianYing resource ID used for auditing. Draft builders must resolve
 `source_identifier` through `VideoSceneEffectType.from_name()` before calling
-`script.add_effect`; they must not pass `asset_id` to `from_name()`.
+`script.add_effect`; person effects must resolve through
+`VideoCharacterEffectType.from_name()` and be placed on a separate
+`CharacterEffects` track. They must not pass `asset_id` to `from_name()`.
 
 Read `references/asset_taxonomy.json` before matching and use
 `scripts/asset_director.py --help` for the deterministic catalog, plan, and

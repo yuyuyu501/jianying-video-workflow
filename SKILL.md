@@ -17,10 +17,13 @@ video-understand (external)
 -> talking-head-rough-cut (bundled) + FFmpeg
 -> validated silent visual + independent narration + review MP4
 -> global captions.srt + speech_timeline.json
+-> video-understand (final-timeline representative frames)
 -> jianying-asset-director (bundled)
--> effect and sound-effect plan
+-> scene-effect/SFX shortlist and AI selection
+-> character-effect shortlist and AI selection
 -> jianying-editor (external)
--> JianYing draft-library creation and structural validation
+-> JianYing draft-library creation with Effects + CharacterEffects tracks
+-> post-build composition QC and structural validation
 ```
 
 ## Repository Layout
@@ -120,11 +123,14 @@ python scripts/run_workflow.py `
 Then inspect the rough-cut previews, global SRT, and source mapping. Prepare
 timestamped visual beats on that final timeline and pass them with `--beats` to
 create an asset candidate plan. The asset director searches the whole local
-library but exposes only a constrained shortlist per beat to the AI. The AI
-must select a shortlist ID or explicitly choose no effect; code validates the
-real resource ID, repetition limits, and cooldown before the selected plan can
-reach `jianying-editor`. Only after the user accepts the cut and selected asset
-plan should `jianying-editor` create a new draft in the local draft library.
+library but exposes only constrained shortlists per beat to the AI. Scene
+effects, sound effects, and person/face effects are separate decisions. Person
+effects are considered only for beats with a visible face and no full-height
+B-roll. The AI must select a shortlist ID or explicitly choose no effect; code
+validates the real resource ID, repetition limits, cooldown, effect type, and
+eligibility before the selected plan can reach `jianying-editor`. Only after
+the user accepts the cut and selected asset plan should `jianying-editor`
+create a new draft in the local draft library.
 
 When the speaker is following a supplied script, pass that script to the rough
 cut stage and review the generated script-alignment report. The rough cut must
@@ -151,13 +157,18 @@ Before handing off the draft, verify:
 - every AI selection is constrained to its generated shortlist or an explicit
   no-effect decision, and the plan passes configured repetition limits;
 - every effect-track segment references a real `materials.video_effects` entry;
+- `Effects` contains only `video_effect` materials and `CharacterEffects`
+  contains only `face_effect` materials;
+- character-effect segments use `face_target` and never overlap a full-height
+  B-roll beat;
 - captions, PiP, titles, and effects do not collide.
 
 Do not use `JyProject.add_effect_simple` to create a JianYing effect track: it
 can leave timeline placeholders without a `video_effect` material. Resolve the
-approved asset name through `pyJianYingDraft.VideoSceneEffectType` and call
-`project.script.add_effect(...)` with a `Timerange` on an effect track. Then
-validate the saved draft before handoff:
+approved scene-effect name through `pyJianYingDraft.VideoSceneEffectType` and
+person-effect name through `VideoCharacterEffectType`, then call
+`project.script.add_effect(...)` with a `Timerange` on the named track. Run
+post-build composition QC and validate the saved draft before handoff:
 
 ```powershell
 python scripts/validate_draft_effects.py --draft-name "DraftName" --expected-count 10
