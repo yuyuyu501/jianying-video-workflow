@@ -221,9 +221,10 @@ def attach_rough_cuts(args: argparse.Namespace) -> int:
     visuals = parse_mappings(args.rough_cut_visual, "--rough-cut-visual")
     narrations = parse_mappings(args.rough_cut_narration, "--rough-cut-narration")
     reviews = parse_mappings(args.rough_cut_review, "--rough-cut-review")
+    transcripts = parse_mappings(args.rough_cut_transcript, "--rough-cut-transcript")
     qc_reports = parse_mappings(args.rough_cut_qc, "--rough-cut-qc")
     required = [source["id"] for source in sources.values() if source.get("decision", {}).get("requires_rough_cut")]
-    missing = [source_id_value for source_id_value in required if source_id_value not in plans or source_id_value not in visuals or source_id_value not in narrations or source_id_value not in reviews or source_id_value not in qc_reports]
+    missing = [source_id_value for source_id_value in required if source_id_value not in plans or source_id_value not in visuals or source_id_value not in narrations or source_id_value not in reviews or source_id_value not in transcripts or source_id_value not in qc_reports]
     if missing:
         raise ValueError("Missing validated rough-cut artifacts for: " + ", ".join(missing))
     for source_id_value, plan in plans.items():
@@ -233,6 +234,7 @@ def attach_rough_cuts(args: argparse.Namespace) -> int:
             "visual": str(visuals[source_id_value]),
             "narration": str(narrations[source_id_value]),
             "review": str(reviews[source_id_value]),
+            "transcript": str(transcripts[source_id_value]),
             "qc": str(qc_reports[source_id_value]),
         }
         qc = read_json(qc_reports[source_id_value])
@@ -252,32 +254,39 @@ def attach_rough_cuts(args: argparse.Namespace) -> int:
     return 0
 
 
-def kept_ranges(source: dict[str, Any]) -> list[dict[str, float]]:
-    plan_path = Path(str(source.get("rough_cut_plan", "")))
-    if not plan_path.is_file():
-        raise FileNotFoundError(f"{source['id']}: rough_cut_plan is required before captions")
-    plan = read_json(plan_path)
-    ranges = plan.get("kept_ranges", [])
-    if not ranges:
-        raise ValueError(f"{source['id']}: rough-cut plan has no kept ranges")
-    normalized = []
-    for item in ranges:
-        start, end = float(item["start"]), float(item["end"])
-        if end > start:
-            normalized.append({"start": start, "end": end})
-    return normalized
-
-
 def require_validated_rough_cut(source: dict[str, Any]) -> None:
     artifacts = source.get("rough_cut_artifacts")
     if not isinstance(artifacts, dict):
         raise ValueError(f"{source['id']}: validated rough-cut artifacts are required before captions")
-    for key in ("visual", "narration", "review", "qc"):
+    for key in ("visual", "narration", "review", "transcript", "qc"):
         if not Path(str(artifacts.get(key, ""))).is_file():
             raise FileNotFoundError(f"{source['id']}: missing rough-cut {key} artifact")
     qc = read_json(Path(artifacts["qc"]))
     if qc.get("status") != "succeeded" or qc.get("errors"):
         raise ValueError(f"{source['id']}: rough-cut QC must pass before captions")
+
+
+def rough_cut_transcript(source: dict[str, Any]) -> tuple[list[dict[str, Any]], float]:
+    """Read speech intervals generated from the rendered rough-cut review file."""
+    require_validated_rough_cut(source)
+    data = read_json(Path(source["rough_cut_artifacts"]["transcript"]))
+    transcript_video = Path(str(data.get("video", "")))
+    review_video = Path(str(source["rough_cut_artifacts"]["review"])).resolve()
+    if transcript_video.name != review_video.name:
+        raise ValueError(f"{source['id']}: transcript must be generated from the rendered rough-cut review MP4")
+    duration = float(data.get("duration", 0.0))
+    entries = []
+    for item in data.get("transcript", []):
+        start = float(item.get("start", 0.0))
+        end = float(item.get("end", start))
+        text = str(item.get("text", "")).strip()
+        if end > start and text:
+            entries.append({"start": round(start, 3), "end": round(end, 3), "recognized_text": text})
+    if not entries:
+        raise ValueError(f"{source['id']}: rough-cut transcript has no speech segments")
+    if duration <= 0:
+        raise ValueError(f"{source['id']}: rough-cut transcript has no duration")
+    return entries, duration
 
 
 def srt_time(seconds: float) -> str:
@@ -349,6 +358,97 @@ def reference_truncations(entries: list[dict[str, Any]], reference_script: Path 
     return problems
 
 
+def to_simplified(text: str) -> str:
+    """Use OpenCC when available; text review remains mandatory either way."""
+    try:
+        from opencc import OpenCC
+        return OpenCC("t2s").convert(text)
+    except ImportError:
+        return text
+
+
+def coverage_report(entries: list[dict[str, Any]], speech_ranges: list[dict[str, Any]], tolerance: float = 0.45) -> dict[str, Any]:
+    """Verify subtitles cover speech detected on the rendered rough-cut timeline."""
+    errors: list[str] = []
+    if not speech_ranges:
+        return {"status": "failed", "errors": ["rough-cut speech ranges are missing"], "range_count": 0}
+    if not entries:
+        return {"status": "failed", "errors": ["SRT has no entries to cover rough-cut speech"], "range_count": len(speech_ranges)}
+    caption_ranges = [(item["start"], item["end"]) for item in entries]
+    first_speech = min(item["start"] for item in speech_ranges)
+    last_speech = max(item["end"] for item in speech_ranges)
+    if caption_ranges[0][0] > first_speech + tolerance:
+        errors.append(f"opening speech is uncovered for {caption_ranges[0][0] - first_speech:.3f}s")
+    if caption_ranges[-1][1] < last_speech - tolerance:
+        errors.append(f"ending speech is uncovered for {last_speech - caption_ranges[-1][1]:.3f}s")
+    for index, speech in enumerate(speech_ranges, start=1):
+        start, end = float(speech["start"]), float(speech["end"])
+        covered = sum(max(0.0, min(end, cap_end) - max(start, cap_start)) for cap_start, cap_end in caption_ranges)
+        if covered < (end - start) * 0.80:
+            errors.append(f"rough-cut speech range {index} is not sufficiently subtitle-covered")
+    return {
+        "status": "passed" if not errors else "failed",
+        "range_count": len(speech_ranges),
+        "first_speech_start": round(first_speech, 3),
+        "last_speech_end": round(last_speech, 3),
+        "errors": errors,
+    }
+
+
+def caption_template(args: argparse.Namespace) -> int:
+    manifest = read_json(args.manifest.resolve())
+    sources = [source for source in manifest.get("sources", []) if source.get("decision", {}).get("requires_rough_cut")]
+    sources.sort(key=lambda item: item["decision"]["timeline_order"])
+    captions = []
+    for source in sources:
+        transcript, _ = rough_cut_transcript(source)
+        for item in transcript:
+            captions.append({
+                "source_id": source["id"],
+                "rough_cut_start": item["start"],
+                "rough_cut_end": item["end"],
+                "recognized_text": item["recognized_text"],
+                "text": "",
+            })
+    output = args.output.resolve()
+    write_json(output, {
+        "version": 1,
+        "timestamp_basis": "rendered_rough_cut_output",
+        "instructions": "Replace text with reviewed simplified Chinese from the rough-cut video and approved copy. Preserve source_id and rough_cut_start/end; split entries only when every replacement retains these actual rough-cut times.",
+        "captions": captions,
+    })
+    emit("succeeded", "caption-template", output=str(output), captions=len(captions))
+    return 0
+
+
+def reviewed_captions(path: Path, sources: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    payload = read_json(path.resolve())
+    values = payload.get("captions", []) if isinstance(payload, dict) else payload
+    if not isinstance(values, list):
+        raise ValueError("caption review must be an array or an object with a captions array")
+    known = {source["id"] for source in sources}
+    grouped = {source_id: [] for source_id in known}
+    for index, item in enumerate(values, start=1):
+        source_id_value = str(item.get("source_id", ""))
+        if source_id_value not in known:
+            raise ValueError(f"caption review entry {index} has unknown source_id")
+        start = float(item.get("rough_cut_start", item.get("start", -1)))
+        end = float(item.get("rough_cut_end", item.get("end", -1)))
+        text = to_simplified(str(item.get("text", "")).strip())
+        if end <= start or not text:
+            raise ValueError(f"caption review entry {index} requires non-empty text and positive rough-cut range")
+        grouped[source_id_value].append({"start": start, "end": end, "text": text})
+    for source in sources:
+        entries = sorted(grouped[source["id"]], key=lambda item: item["start"])
+        if not entries:
+            raise ValueError(f"caption review has no entries for {source['id']}")
+        for previous, current in zip(entries, entries[1:]):
+            if current["start"] < previous["end"] - 0.001:
+                raise ValueError(f"caption review overlaps on {source['id']}")
+        grouped[source["id"]] = entries
+    return grouped
+
+
 def caption_qc(
     srt_path: Path,
     timeline_path: Path,
@@ -385,6 +485,15 @@ def caption_qc(
     for problem in truncations:
         errors.append(f"reference text appears truncated at entry {problem['index']}: missing {problem['missing_prefix']!r}")
     duration = float(timeline.get("duration", 0.0)) if isinstance(timeline, dict) else 0.0
+    rough_cut_coverage: dict[str, Any] | None = None
+    if not isinstance(timeline, dict) or timeline.get("timestamp_basis") != "rendered_rough_cut_output":
+        errors.append("speech timeline must use rendered_rough_cut_output as its timestamp basis")
+    elif "speech_ranges" not in timeline:
+        errors.append("speech timeline must include rendered rough-cut speech_ranges")
+    else:
+        rough_cut_coverage = coverage_report(srt_entries, timeline.get("speech_ranges", []))
+        if rough_cut_coverage["status"] != "passed":
+            errors.extend(rough_cut_coverage["errors"])
     if srt_entries and duration and srt_entries[-1]["end"] > duration + 0.1:
         errors.append("final caption ends after speech timeline duration")
     if srt_entries and duration and duration - srt_entries[-1]["end"] > max_gap:
@@ -400,6 +509,7 @@ def caption_qc(
         "truncations": truncations,
         "warnings": warnings,
         "errors": errors,
+        "rough_cut_coverage": rough_cut_coverage,
     }
 
 
@@ -407,57 +517,45 @@ def captions(args: argparse.Namespace) -> int:
     manifest = read_json(args.manifest.resolve())
     if manifest.get("unresolved_sources"):
         raise ValueError("Resolve reviewed media decisions before generating final captions")
-    speech_sources = [
-        source for source in manifest.get("sources", [])
-        if source.get("decision", {}).get("requires_rough_cut")
-    ]
+    speech_sources = [source for source in manifest.get("sources", []) if source.get("decision", {}).get("requires_rough_cut")]
     if not speech_sources:
         raise ValueError("No keep_original narration sources are available for captions")
     speech_sources.sort(key=lambda item: item["decision"]["timeline_order"])
+    if not args.caption_review:
+        raise ValueError("--caption-review is required; captions must be reviewed against the rendered rough-cut transcript")
+    reviewed = reviewed_captions(args.caption_review, speech_sources)
     output_dir = args.output_dir.resolve()
     entries: list[dict[str, Any]] = []
     cursor = 0.0
+    speech_ranges: list[dict[str, Any]] = []
     for source in speech_sources:
-        require_validated_rough_cut(source)
-        analysis = read_json(Path(source["analysis"]))
-        transcript = analysis.get("transcript", [])
-        ranges = kept_ranges(source)
-        range_offsets = []
-        source_cursor = 0.0
-        for item in ranges:
-            range_offsets.append((item, source_cursor))
-            source_cursor += item["end"] - item["start"]
-        for transcript_item in transcript:
-            original_start = float(transcript_item.get("start", 0.0))
-            original_end = float(transcript_item.get("end", original_start))
-            text = str(transcript_item.get("text", "")).strip()
-            if not text or original_end <= original_start:
-                continue
-            candidates = []
-            for item, offset in range_offsets:
-                overlap_start = max(original_start, item["start"])
-                overlap_end = min(original_end, item["end"])
-                if overlap_end > overlap_start:
-                    candidates.append((overlap_end - overlap_start, overlap_start, overlap_end, item, offset))
-            if not candidates:
-                continue
-            _, overlap_start, overlap_end, item, offset = max(candidates, key=lambda value: value[0])
-            start = cursor + offset + (overlap_start - item["start"])
-            end = cursor + offset + (overlap_end - item["start"])
+        transcript, duration = rough_cut_transcript(source)
+        review_entries = reviewed[source["id"]]
+        out_of_range = [item for item in review_entries if item["start"] < -0.01 or item["end"] > duration + 0.10]
+        if out_of_range:
+            raise ValueError(f"{source['id']}: caption review timestamps fall outside rendered rough-cut duration")
+        coverage = coverage_report(review_entries, transcript)
+        if coverage["status"] != "passed":
+            raise ValueError(f"{source['id']}: caption coverage QC failed: " + "; ".join(coverage["errors"]))
+        for item in transcript:
+            speech_ranges.append({"start": cursor + item["start"], "end": cursor + item["end"]})
+        for item in review_entries:
+            start = cursor + item["start"]
+            end = cursor + item["end"]
             entries.append({
                 "source_id": source["id"],
                 "source_video": source["video"],
-                "source_start": round(overlap_start, 3),
-                "source_end": round(overlap_end, 3),
+                "source_start": round(item["start"], 3),
+                "source_end": round(item["end"], 3),
                 "timeline_start": round(start, 3),
                 "timeline_end": round(max(end, start + 0.08), 3),
                 "role": source["decision"]["role"],
                 "audio_policy": source["decision"]["audio_policy"],
-                "text": text,
+                "text": item["text"],
             })
-        cursor += source_cursor
+        cursor += duration
     if not entries:
-        raise ValueError("No transcript segments survived the rough-cut plans")
+        raise ValueError("No reviewed caption entries survived the rough-cut timeline")
     output_dir.mkdir(parents=True, exist_ok=True)
     srt_path = output_dir / "captions.srt"
     srt_lines = []
@@ -466,9 +564,11 @@ def captions(args: argparse.Namespace) -> int:
     srt_path.write_text("\n".join(srt_lines), encoding="utf-8")
     timeline_path = output_dir / "speech_timeline.json"
     timeline = {
-        "version": 1,
+        "version": 2,
         "duration": round(cursor, 3),
+        "timestamp_basis": "rendered_rough_cut_output",
         "captions": entries,
+        "speech_ranges": speech_ranges,
         "speech_sources": [
             {
                 "source_id": source["id"],
@@ -535,12 +635,18 @@ def parser() -> argparse.ArgumentParser:
     attach_parser.add_argument("--rough-cut-visual", action="append", required=True, help="SOURCE_ID=SILENT_VIDEO_PATH")
     attach_parser.add_argument("--rough-cut-narration", action="append", required=True, help="SOURCE_ID=NARRATION_AUDIO_PATH")
     attach_parser.add_argument("--rough-cut-review", action="append", required=True, help="SOURCE_ID=REVIEW_MP4_PATH")
+    attach_parser.add_argument("--rough-cut-transcript", action="append", required=True, help="SOURCE_ID=ROUGH_CUT_TRANSCRIPT_JSON")
     attach_parser.add_argument("--rough-cut-qc", action="append", required=True, help="SOURCE_ID=QC_JSON_PATH")
     attach_parser.add_argument("--output", type=Path)
     attach_parser.set_defaults(handler=attach_rough_cuts)
+    template_parser = commands.add_parser("caption-template", help="Create a review template from rough-cut-timebase transcripts")
+    template_parser.add_argument("--manifest", type=Path, required=True)
+    template_parser.add_argument("--output", type=Path, required=True)
+    template_parser.set_defaults(handler=caption_template)
     captions_parser = commands.add_parser("captions", help="Create final-timeline SRT and source mapping")
     captions_parser.add_argument("--manifest", type=Path, required=True)
     captions_parser.add_argument("--output-dir", type=Path, required=True)
+    captions_parser.add_argument("--caption-review", type=Path, required=True, help="Reviewed simplified-Chinese captions with rough-cut timestamps")
     captions_parser.add_argument("--reference-script", type=Path, help="Approved copy used to reject unacknowledged subtitle truncation")
     captions_parser.set_defaults(handler=captions)
     caption_qc_parser = commands.add_parser("caption-qc", help="Verify SRT, speech timeline, and optional approved copy before draft creation")

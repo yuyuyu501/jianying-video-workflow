@@ -23,13 +23,19 @@ clip is not the primary talking head.
    and whose `audio_policy` is `keep_original` to `talking-head-rough-cut`.
    Keep B-roll visually available, but set `broll_visual` clips to `mute`.
 5. Render every approved narration plan into a silent visual MP4, narration
-   M4A, review MP4, and successful QC report. Attach that full artifact set to
-   the manifest, then run `captions`. A plan alone never authorizes caption
-   generation. `captions` writes a final-timeline `captions.srt`, a
+   M4A, review MP4, and successful QC report. Then transcribe the rendered
+   rough-cut review MP4. This is the only permitted caption timestamp source;
+   never map a raw-camera transcript through the EDL to create captions.
+6. Attach the rough-cut artifacts and the rough-cut transcript to the manifest,
+   then run `caption-template`. Review its actual rough-cut timestamps against
+   the rough-cut video and approved copy. Replace its text with simplified
+   Chinese while retaining those timestamps, then run `captions` with
+   `--caption-review`. It writes a final-timeline `captions.srt`, a
    `speech_timeline.json` source mapping, and `captions.qc.json`. Caption QC
-   must pass before effects or draft creation; when an approved script exists,
-   pass `--reference-script` so unacknowledged sentence-tail truncation blocks
-   the workflow.
+   must pass before effects or draft creation; it rejects any uncovered opening,
+   middle, or ending speech detected on the rough-cut output. When an approved
+   script exists, pass `--reference-script` so unacknowledged sentence-tail
+   truncation also blocks the workflow.
 
 ## Roles And Audio Policies
 
@@ -51,11 +57,12 @@ the audio's editorial meaning cannot be established, set `review_required`.
 
 ## Caption Contract
 
-`captions.srt` represents the final narration timeline, not the timestamp of
-any raw camera file. `speech_timeline.json` retains the source video, source
-timestamps, final timestamps, and source role for every caption. Pass both to
-`jianying-asset-director`; use them to align effects, SFX, PiP, and subtitle
-safe zones with the final edit.
+`captions.srt` represents the rendered rough-cut narration timeline, not the
+timestamp of any raw camera file. `speech_timeline.json` records
+`timestamp_basis: rendered_rough_cut_output`, the detected speech ranges, the
+source video, source-relative timestamps, final timestamps, and source role
+for every caption. Pass both to `jianying-asset-director`; use them to align
+effects, SFX, PiP, and subtitle safe zones with the final edit.
 
 This contract assumes that silent B-roll overlays the narration timeline. Do
 not insert a standalone visual-only duration between narration sources after

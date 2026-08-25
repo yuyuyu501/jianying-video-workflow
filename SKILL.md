@@ -16,8 +16,9 @@ video-understand (external)
 -> reviewed source roles and audio policies
 -> talking-head-rough-cut (bundled) + FFmpeg
 -> validated silent visual + independent narration + review MP4
+-> transcribe rendered rough-cut review + review simplified-Chinese caption template
 -> global captions.srt + speech_timeline.json
--> caption QC: source mapping, text completeness, and reference-script coverage
+-> caption QC: rough-cut speech coverage, source mapping, text completeness, and reference-script coverage
 -> video-understand (final-timeline representative frames)
 -> new JianYing draft skeleton + named-track QC
 -> jianying-asset-director (bundled)
@@ -105,12 +106,16 @@ reason, confidence, and a narration order when its original speech is kept.
 The role director mutes only reviewed `broll_visual` sources; it preserves or
 routes useful ambient audio explicitly.
 
-To render reviewed narration rough cuts and generate the final-timeline
-`captions.srt` plus `speech_timeline.json`, supply the decisions file. Every
+To render reviewed narration rough cuts, supply the decisions file. Every
 accepted cut produces a silent visual MP4, a narration-only M4A, a review MP4,
-and a QC report. The workflow stops before captions when audio duration,
-continuity, or audible-content checks fail. For more than one narration source,
-semantic exclusions are keyed by source ID.
+and a QC report. The workflow then transcribes the rendered review MP4 and
+stops with a caption-review template. Correct that template against the review
+video and approved copy in simplified Chinese, preserving its rough-cut
+timestamps; pass it as `--caption-review` to generate the final-timeline
+`captions.srt` and `speech_timeline.json`. The workflow stops before captions
+when audio duration, continuity, audible-content, or subtitle speech-coverage
+checks fail. For more than one narration source, semantic exclusions are keyed
+by source ID.
 
 ```powershell
 python scripts/run_workflow.py `
@@ -119,6 +124,7 @@ python scripts/run_workflow.py `
   --media-decisions "work\media_decisions.json" `
   --semantic-exclusions "work\approved_semantic_cuts.json" `
   --reference-script "C:\path\to\approved-script.txt" `
+  --caption-review "work\captions\caption_review.json" `
   --beats "work\final-timeline-beats.json" `
   --draft-name "Heart_Emergency_2026-08-25" `
   --render-rough-cut `
@@ -166,11 +172,13 @@ Before handing off the draft, verify:
 - audio fades prevent clicks and narration remains intelligible;
 - the narration M4A, silent visual MP4, and review MP4 all match the approved
   EDL within audio-frame tolerance; narration has no unplanned long silence;
-- `captions.srt` and `speech_timeline.json` map surviving speech to the final
-  timeline and retain each source-video reference;
+- `captions.srt` and `speech_timeline.json` use the rendered rough-cut output
+  as their timestamp basis, map its surviving speech to the final timeline,
+  and retain each source-video reference;
 - `captions.qc.json` passed: SRT and speech timeline agree in count, text, and
-  timestamps; there is no unaccounted long subtitle gap; a reference-script
-  sentence is not silently truncated;
+  timestamps; detected opening, middle, and final rough-cut speech all have
+  subtitle coverage; there is no unaccounted long subtitle gap; a
+  reference-script sentence is not silently truncated;
 - `draft_skeleton.qc.json` passed before any effect, subtitle, or B-roll
   segment is written; all required tracks exist once with the correct type and
   `B_Roll` begins muted;

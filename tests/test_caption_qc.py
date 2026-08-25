@@ -34,7 +34,7 @@ class CaptionQcTests(unittest.TestCase):
     def test_caption_qc_rejects_reference_tail_truncation(self):
         with tempfile.TemporaryDirectory() as directory:
             srt = self.write(directory, "captions.srt", "1\n00:00:00,000 --> 00:00:02,000\n心脏骤停，家属只能眼睁睁看着，一点办\n\n2\n00:00:02,000 --> 00:00:04,000\n正确做法是立刻拨打120\n")
-            timeline = self.write(directory, "speech_timeline.json", {"duration": 4.0, "captions": [
+            timeline = self.write(directory, "speech_timeline.json", {"duration": 4.0, "timestamp_basis": "rendered_rough_cut_output", "speech_ranges": [{"start": 0.0, "end": 2.0}, {"start": 2.0, "end": 4.0}], "captions": [
                 {"timeline_start": 0.0, "timeline_end": 2.0, "text": "心脏骤停，家属只能眼睁睁看着，一点办"},
                 {"timeline_start": 2.0, "timeline_end": 4.0, "text": "正确做法是立刻拨打120"},
             ]})
@@ -46,11 +46,50 @@ class CaptionQcTests(unittest.TestCase):
     def test_caption_qc_accepts_matching_srt_and_timeline(self):
         with tempfile.TemporaryDirectory() as directory:
             srt = self.write(directory, "captions.srt", "1\n00:00:00,000 --> 00:00:02,000\n完整字幕\n")
-            timeline = self.write(directory, "speech_timeline.json", {"duration": 2.0, "captions": [
+            timeline = self.write(directory, "speech_timeline.json", {"duration": 2.0, "timestamp_basis": "rendered_rough_cut_output", "speech_ranges": [{"start": 0.0, "end": 2.0}], "captions": [
                 {"timeline_start": 0.0, "timeline_end": 2.0, "text": "完整字幕"},
             ]})
             report = media_role.caption_qc(srt, timeline)
             self.assertEqual(report["status"], "succeeded")
+
+    def test_caption_qc_rejects_timeline_without_rendered_rough_cut_proof(self):
+        with tempfile.TemporaryDirectory() as directory:
+            srt = self.write(directory, "captions.srt", "1\n00:00:00,000 --> 00:00:02,000\n字幕\n")
+            timeline = self.write(directory, "speech_timeline.json", {"duration": 2.0, "captions": [
+                {"timeline_start": 0.0, "timeline_end": 2.0, "text": "字幕"},
+            ]})
+            report = media_role.caption_qc(srt, timeline)
+            self.assertEqual(report["status"], "failed")
+            self.assertIn("speech timeline must use rendered_rough_cut_output as its timestamp basis", report["errors"])
+
+    def test_caption_qc_rejects_uncovered_opening_rough_cut_speech(self):
+        with tempfile.TemporaryDirectory() as directory:
+            srt = self.write(directory, "captions.srt", "1\n00:00:07,000 --> 00:00:10,000\n第一条字幕\n")
+            timeline = self.write(directory, "speech_timeline.json", {
+                "duration": 10.0,
+                "timestamp_basis": "rendered_rough_cut_output",
+                "speech_ranges": [{"start": 0.0, "end": 6.8}, {"start": 7.0, "end": 10.0}],
+                "captions": [{"timeline_start": 7.0, "timeline_end": 10.0, "text": "第一条字幕"}],
+            })
+            report = media_role.caption_qc(srt, timeline)
+            self.assertEqual(report["status"], "failed")
+            self.assertTrue(any("opening speech is uncovered" in error for error in report["errors"]))
+
+    def test_caption_qc_accepts_rough_cut_speech_coverage(self):
+        with tempfile.TemporaryDirectory() as directory:
+            srt = self.write(directory, "captions.srt", "1\n00:00:00,000 --> 00:00:02,000\n开场字幕\n\n2\n00:00:02,000 --> 00:00:04,000\n结尾字幕\n")
+            timeline = self.write(directory, "speech_timeline.json", {
+                "duration": 4.0,
+                "timestamp_basis": "rendered_rough_cut_output",
+                "speech_ranges": [{"start": 0.0, "end": 2.0}, {"start": 2.0, "end": 4.0}],
+                "captions": [
+                    {"timeline_start": 0.0, "timeline_end": 2.0, "text": "开场字幕"},
+                    {"timeline_start": 2.0, "timeline_end": 4.0, "text": "结尾字幕"},
+                ],
+            })
+            report = media_role.caption_qc(srt, timeline)
+            self.assertEqual(report["status"], "succeeded")
+            self.assertEqual(report["rough_cut_coverage"]["status"], "passed")
 
     def test_draft_caption_validation_rejects_text_mismatch(self):
         document = {

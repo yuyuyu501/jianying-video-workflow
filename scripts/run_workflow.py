@@ -80,6 +80,7 @@ def main() -> int:
     parser.add_argument("--media-decisions", type=Path, help="Reviewed media-role-director decisions JSON")
     parser.add_argument("--semantic-exclusions", type=Path, help="Reviewed cuts; use a per-source mapping when multiple narration sources exist")
     parser.add_argument("--reference-script", type=Path, help="Approved script/copy used to audit off-topic and repeated speech")
+    parser.add_argument("--caption-review", type=Path, help="Reviewed simplified-Chinese captions timed against rough-cut output; required to create generated captions")
     parser.add_argument("--allow-no-reference-script", action="store_true", help="Explicitly allow caption QC without script-completeness checks")
     parser.add_argument("--render-rough-cut", action="store_true", help="Render every approved narration rough cut and then generate global captions")
     parser.add_argument("--skip-captions", action="store_true", help="Do not generate captions after rendering rough cuts")
@@ -99,7 +100,7 @@ def main() -> int:
     jianying_python = args.jianying_python or Path(os.environ.get("JY_PYTHON", "").strip() or sys.executable)
     if not jianying_python.is_file():
         raise FileNotFoundError(f"JianYing Python executable not found: {jianying_python}")
-    for path in (args.srt, args.speech_timeline):
+    for path in (args.srt, args.speech_timeline, args.caption_review):
         if path and not path.is_file():
             raise FileNotFoundError(path)
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -174,6 +175,7 @@ def main() -> int:
     visuals: dict[str, Path] = {}
     narrations: dict[str, Path] = {}
     qc_reports: dict[str, Path] = {}
+    rough_cut_transcripts: dict[str, Path] = {}
     for source in speech_sources:
         source_id = str(source["id"])
         plan = rough_cut_dir / f"{source_id}.plan.json"
@@ -207,6 +209,12 @@ def main() -> int:
             visuals[source_id] = visual
             narrations[source_id] = narration
             qc_reports[source_id] = qc_report
+            transcript = args.output_dir / "captions" / "rough-cut-transcripts" / f"{source_id}.json"
+            run([
+                sys.executable, str(skills["video-understand"] / "scripts" / "understand_video.py"),
+                str(preview), "-o", str(transcript), "-q", "--max-frames", "1",
+            ])
+            rough_cut_transcripts[source_id] = transcript
 
     if not args.render_rough_cut:
         print("RESULT: " + json.dumps({
@@ -229,14 +237,29 @@ def main() -> int:
                 "--rough-cut-narration", f"{source_id}={narrations[source_id]}",
                 "--rough-cut-review", f"{source_id}={previews[source_id]}",
                 "--rough-cut-qc", f"{source_id}={qc_reports[source_id]}",
+                "--rough-cut-transcript", f"{source_id}={rough_cut_transcripts[source_id]}",
             ])
     run(attach_command)
 
     generated_srt = None
     speech_timeline = None
     caption_qc = None
+    captions_dir = args.output_dir / "captions"
+    caption_template = captions_dir / "caption_review.template.json"
+    run([
+        sys.executable, str(skills["media-role-director"] / "scripts" / "media_role_director.py"), "caption-template",
+        "--manifest", str(manifest_path), "--output", str(caption_template),
+    ])
+    if not args.srt and not args.skip_captions and not args.caption_review:
+        print("RESULT: " + json.dumps({
+            "status": "review_required",
+            "media_manifest": str(manifest_path),
+            "rough_cut_transcripts": {source_id: str(path) for source_id, path in rough_cut_transcripts.items()},
+            "caption_review_template": str(caption_template),
+            "next_step": "Review the actual rough-cut transcript against the rough-cut video and reference script. Fill text in the caption template with simplified Chinese while preserving each rough_cut_start/end, then rerun with --caption-review.",
+        }, ensure_ascii=False))
+        return 0
     if args.srt:
-        captions_dir = args.output_dir / "captions"
         generated_srt = args.srt.resolve()
         speech_timeline = args.speech_timeline.resolve()
         caption_qc_command = [
@@ -249,11 +272,11 @@ def main() -> int:
         run(caption_qc_command)
         caption_qc = captions_dir / "captions.qc.json"
     elif args.render_rough_cut and not args.skip_captions:
-        captions_dir = args.output_dir / "captions"
         captions_command = [
             sys.executable, str(skills["media-role-director"] / "scripts" / "media_role_director.py"), "captions",
             "--manifest", str(manifest_path), "--output-dir", str(captions_dir),
         ]
+        captions_command.extend(["--caption-review", str(args.caption_review.resolve())])
         if args.reference_script:
             captions_command.extend(["--reference-script", str(args.reference_script.resolve())])
         run(captions_command)
@@ -309,6 +332,8 @@ def main() -> int:
             }
             for source_id in previews
         },
+        "rough_cut_transcripts": {source_id: str(path) for source_id, path in rough_cut_transcripts.items()},
+        "caption_review_template": str(caption_template),
         "captions_srt": str(generated_srt) if generated_srt else None,
         "speech_timeline": str(speech_timeline) if speech_timeline else None,
         "captions_qc": str(caption_qc) if caption_qc else None,
