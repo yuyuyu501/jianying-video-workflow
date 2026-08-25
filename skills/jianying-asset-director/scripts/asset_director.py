@@ -11,7 +11,8 @@ import re
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, Dict, Iterable, List
+from collections import Counter
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 
 DEFAULT_TAXONOMY = Path(__file__).resolve().parents[1] / "references" / "asset_taxonomy.json"
@@ -72,11 +73,52 @@ def normalize(value: str) -> str:
     return re.sub(r"\s+", "", str(value or "")).lower()
 
 
+def _video_effect_type():
+    """Load the local JianYing enum used to resolve real effect metadata."""
+    try:
+        from pyJianYingDraft import VideoSceneEffectType
+
+        return VideoSceneEffectType
+    except ImportError:
+        pass
+
+    roots = []
+    env_root = os.environ.get("JY_SKILL_ROOT", "").strip()
+    if env_root:
+        roots.append(Path(env_root))
+    roots.extend([
+        Path(__file__).resolve().parents[2] / "jianying-editor",
+        Path.home() / ".codex" / "skills" / "jianying-editor",
+    ])
+    for root in roots:
+        vendor = root / "scripts" / "vendor"
+        if vendor.exists() and str(vendor) not in sys.path:
+            sys.path.insert(0, str(vendor))
+            try:
+                from pyJianYingDraft import VideoSceneEffectType
+
+                return VideoSceneEffectType
+            except ImportError:
+                continue
+    raise RuntimeError("无法加载 pyJianYingDraft.VideoSceneEffectType，不能验证剪映画面特效 ID")
+
+
+def resolve_video_effect(name: str) -> Dict[str, str]:
+    """Resolve a catalog name to JianYing's real resource metadata."""
+    effect = _video_effect_type().from_name(name)
+    metadata = effect.value
+    return {
+        "resource_id": str(metadata.resource_id),
+        "effect_id": str(metadata.effect_id),
+        "md5": str(metadata.md5),
+    }
+
+
 def classify(name: str, taxonomy: Dict[str, Any]) -> Dict[str, Any]:
     exact = taxonomy.get("asset_tags", {}).get(name)
     text = normalize(name)
     tags: List[str] = []
-    keyword_tags = {
+    default_keyword_tags = {
         "故障": "glitch", "震闪": "impact", "冲击": "impact", "波": "impact",
         "警": "warning", "危险": "warning", "不对劲": "warning", "扫描": "scan",
         "光线": "highlight", "倒计时": "timer", "时间": "time_pressure",
@@ -86,6 +128,7 @@ def classify(name: str, taxonomy: Dict[str, Any]) -> Dict[str, Any]:
         "烟花": "fireworks", "爆炸": "explosion", "庆祝": "celebration",
         "雷": "low_frequency", "低沉": "low_frequency", "救护": "emergency",
     }
+    keyword_tags = {**default_keyword_tags, **taxonomy.get("keyword_tags", {})}
     for keyword, tag in keyword_tags.items():
         if keyword in text and tag not in tags:
             tags.append(tag)
@@ -102,13 +145,23 @@ def catalog(data_dir: Path, taxonomy_path: Path) -> Dict[str, Any]:
         ("video_scene_effects.csv", "video_effect", "identifier"),
         ("cloud_sound_effects.csv", "sound_effect", "effect_id"),
     ]
+    unresolved_video_effects: List[Dict[str, str]] = []
     for filename, asset_type, id_key in sources:
         for row in read_csv_rows(data_dir / filename):
-            asset_id = str(row.get(id_key) or "").strip()
+            raw_asset_id = str(row.get(id_key) or "").strip()
             if asset_type == "video_effect":
-                name = str(row.get("identifier") or row.get("title") or asset_id).strip()
+                name = str(row.get("identifier") or row.get("title") or "").strip()
+                if not name:
+                    continue
+                try:
+                    metadata = resolve_video_effect(name)
+                except (RuntimeError, ValueError) as exc:
+                    unresolved_video_effects.append({"name": name, "reason": str(exc)})
+                    continue
+                asset_id = metadata["resource_id"]
             else:
-                name = str(row.get("title") or row.get("description") or asset_id).strip()
+                name = str(row.get("title") or row.get("description") or raw_asset_id).strip()
+                asset_id = raw_asset_id
             if not asset_id:
                 continue
             semantic = classify(name, taxonomy)
@@ -117,7 +170,7 @@ def catalog(data_dir: Path, taxonomy_path: Path) -> Dict[str, Any]:
                 duration_s = float(duration) if duration else None
             except ValueError:
                 duration_s = None
-            assets.append({
+            asset = {
                 "asset_id": asset_id,
                 "name": name,
                 "asset_type": asset_type,
@@ -126,8 +179,20 @@ def catalog(data_dir: Path, taxonomy_path: Path) -> Dict[str, Any]:
                 "tags": semantic.get("tags", []),
                 "intensity": float(semantic.get("intensity", 0.5)),
                 "categories": row.get("categories", ""),
-            })
-    return {"version": 1, "data_dir": str(data_dir), "asset_count": len(assets), "assets": assets}
+            }
+            if asset_type == "video_effect":
+                asset.update(metadata)
+                asset["source_identifier"] = name
+            else:
+                asset["effect_id"] = asset_id
+            assets.append(asset)
+    return {
+        "version": 2,
+        "data_dir": str(data_dir),
+        "asset_count": len(assets),
+        "assets": assets,
+        "unresolved_video_effects": unresolved_video_effects,
+    }
 
 
 def beat_list(value: Any) -> List[Dict[str, Any]]:
@@ -181,6 +246,80 @@ def score_asset(asset: Dict[str, Any], purpose: str, style: Dict[str, Any], taxo
     return score, reasons
 
 
+def selection_rules(taxonomy: Dict[str, Any], asset_type: str) -> Dict[str, Any]:
+    selection = taxonomy.get("selection", {})
+    defaults = {
+        "candidate_limit": 15,
+        "min_score": 2.0,
+        "max_same_effect_per_plan": 2,
+        "repeat_cooldown_seconds": 45.0,
+        "allow_no_effect": True,
+    }
+    rules = dict(defaults)
+    rules.update(selection.get(asset_type, {}))
+    return rules
+
+
+def rank_candidates(
+    assets: List[Dict[str, Any]],
+    purpose: str,
+    style: Dict[str, Any],
+    taxonomy: Dict[str, Any],
+    asset_type: str,
+) -> List[Tuple[float, List[str], Dict[str, Any]]]:
+    rules = selection_rules(taxonomy, asset_type)
+    ranked = [
+        (score, reasons, asset)
+        for score, reasons, asset in (
+            score_asset(asset, purpose, style, taxonomy) + (asset,) for asset in assets
+        )
+        if score >= float(rules["min_score"])
+    ]
+    # Stable ID ordering makes tied candidates reproducible without favoring one name.
+    return sorted(ranked, key=lambda item: (-item[0], str(item[2].get("asset_id", ""))))
+
+
+def candidate_record(score: float, reasons: List[str], asset: Dict[str, Any]) -> Dict[str, Any]:
+    record = {
+        "asset_id": asset["asset_id"],
+        "name": asset["name"],
+        "asset_type": asset["asset_type"],
+        "score": round(score, 2),
+        "reasons": reasons,
+    }
+    for key in ("resource_id", "effect_id", "md5", "source_identifier"):
+        if asset.get(key):
+            record[key] = asset[key]
+    return record
+
+
+def diversity_problem(
+    asset_id: str,
+    start: float,
+    history: List[Dict[str, Any]],
+    rules: Dict[str, Any],
+    asset_type: str,
+) -> Optional[str]:
+    counts = Counter(item.get("asset_id") for item in history)
+    max_count = int(rules["max_same_effect_per_plan"])
+    cooldown = float(rules["repeat_cooldown_seconds"])
+    if counts[asset_id] >= max_count:
+        if any(
+            item.get("asset_id") == asset_id
+            and abs(float(item.get("start", 0)) - start) < cooldown
+            for item in history
+        ):
+            return f"{asset_type} violates repeat cooldown: {asset_id}"
+        return f"{asset_type} repeats beyond plan limit: {asset_id}"
+    if any(
+        item.get("asset_id") == asset_id
+        and abs(float(item.get("start", 0)) - start) < cooldown
+        for item in history
+    ):
+        return f"{asset_type} violates repeat cooldown: {asset_id}"
+    return None
+
+
 def plan(beats_path: Path, catalog_path: Path, taxonomy_path: Path, style_name: str) -> Dict[str, Any]:
     beats = beat_list(load_json(beats_path))
     cat = load_json(catalog_path)
@@ -190,37 +329,176 @@ def plan(beats_path: Path, catalog_path: Path, taxonomy_path: Path, style_name: 
     sound_assets = [a for a in cat.get("assets", []) if a.get("asset_type") == "sound_effect"]
     visual_plan: List[Dict[str, Any]] = []
     sound_plan: List[Dict[str, Any]] = []
-    rejected: List[Dict[str, Any]] = []
+    decisions: List[Dict[str, Any]] = []
+    visual_rules = selection_rules(taxonomy, "visual")
+    sound_rules = selection_rules(taxonomy, "sound")
     for beat in beats:
         purpose = beat["purpose"]
-        ranked_visual = sorted((score_asset(a, purpose, style, taxonomy) + (a,) for a in visual_assets), reverse=True, key=lambda x: x[0])
-        ranked_sound = sorted((score_asset(a, purpose, style, taxonomy) + (a,) for a in sound_assets), reverse=True, key=lambda x: x[0])
-        max_dur = taxonomy.get("beat_purposes", {}).get(purpose, {}).get("max_duration", 1.2)
-        visual = ranked_visual[0] if ranked_visual and ranked_visual[0][0] >= 2.0 else None
-        sound = ranked_sound[0] if ranked_sound and ranked_sound[0][0] >= 2.0 else None
-        if visual:
-            score, reasons, asset = visual
-            duration = min(max_dur, max(0.4, beat["end"] - beat["start"]))
-            visual_plan.append({"asset_id": asset["asset_id"], "name": asset["name"], "start": beat["start"], "duration": duration, "zone": beat.get("effect_zone", "full_frame"), "score": round(score, 2), "reasons": reasons, "beat_id": beat["beat_id"]})
-        if sound:
-            score, reasons, asset = sound
-            duration = min(max_dur, asset.get("duration_s") or max_dur)
-            track = beat.get("sound_track", "SFX_Accent")
-            sound_plan.append({"asset_id": asset["asset_id"], "name": asset["name"], "start": beat["start"], "duration": duration, "track": track, "volume": beat.get("volume", 0.12), "score": round(score, 2), "reasons": reasons, "beat_id": beat["beat_id"]})
-        for score, reasons, asset in (ranked_visual[1:4] + ranked_sound[1:4]):
-            if score < 0:
-                rejected.append({"asset_id": asset["asset_id"], "name": asset["name"], "beat_id": beat["beat_id"], "reason": reasons})
-    return {"version": 1, "style": style_name, "beats": beats, "visual_effects": visual_plan, "sound_effects": sound_plan, "rejected": rejected, "preview_required": True, "validation": {"status": "pending"}}
+        ranked_visual = rank_candidates(visual_assets, purpose, style, taxonomy, "visual")
+        ranked_sound = rank_candidates(sound_assets, purpose, style, taxonomy, "sound")
+        beat["visual_candidates"] = [
+            candidate_record(score, reasons, asset)
+            for score, reasons, asset in ranked_visual[: int(visual_rules["candidate_limit"])]
+        ]
+        beat["sound_candidates"] = [
+            candidate_record(score, reasons, asset)
+            for score, reasons, asset in ranked_sound[: int(sound_rules["candidate_limit"])]
+        ]
+        decisions.append({
+            "beat_id": beat["beat_id"],
+            "visual_candidate_count": len(beat["visual_candidates"]),
+            "sound_candidate_count": len(beat["sound_candidates"]),
+            "visual_selected": None,
+            "sound_selected": None,
+            "visual_status": "awaiting_ai_review",
+            "sound_status": "awaiting_ai_review",
+        })
+    return {
+        "version": 2,
+        "style": style_name,
+        "selection": {"visual": visual_rules, "sound": sound_rules},
+        "beats": beats,
+        "visual_effects": visual_plan,
+        "sound_effects": sound_plan,
+        "decisions": decisions,
+        "rejected": [],
+        "preview_required": True,
+        "ai_review": {"required": True, "mode": "choose_from_shortlist_or_no_effect", "status": "pending"},
+        "validation": {"status": "pending"},
+    }
 
 
-def validate(plan_path: Path, draft_path: Path | None) -> Dict[str, Any]:
+def selected_item(
+    beat: Dict[str, Any],
+    candidate: Dict[str, Any],
+    asset_type: str,
+    taxonomy: Dict[str, Any],
+) -> Dict[str, Any]:
+    purpose_rule = taxonomy.get("beat_purposes", {}).get(beat["purpose"], {})
+    max_duration = float(purpose_rule.get("max_duration", 1.2))
+    item = {
+        "asset_id": candidate["asset_id"],
+        "name": candidate["name"],
+        "start": beat["start"],
+        "score": candidate["score"],
+        "reasons": candidate["reasons"],
+        "beat_id": beat["beat_id"],
+        "selection_source": "ai_shortlist_review",
+    }
+    if asset_type == "visual":
+        item["duration"] = min(max_duration, max(0.4, beat["end"] - beat["start"]))
+        item["zone"] = beat.get("effect_zone", "full_frame")
+    else:
+        item["duration"] = max_duration
+        item["track"] = beat.get("sound_track", "SFX_Accent")
+        item["volume"] = beat.get("volume", 0.12)
+    for key in ("resource_id", "effect_id", "md5", "source_identifier"):
+        if candidate.get(key):
+            item[key] = candidate[key]
+    return item
+
+
+def apply_selections(plan_path: Path, selections_path: Path, taxonomy_path: Path) -> Dict[str, Any]:
+    """Apply structured AI selections that are constrained to the plan shortlists."""
+    data = load_json(plan_path)
+    selections_payload = load_json(selections_path)
+    selections = selections_payload.get("selections", selections_payload) if isinstance(selections_payload, dict) else selections_payload
+    if not isinstance(selections, list):
+        raise ValueError("selections JSON must be a list or an object containing selections")
+    selection_by_beat = {}
+    for selection in selections:
+        if not isinstance(selection, dict) or not selection.get("beat_id"):
+            raise ValueError("every selection requires beat_id")
+        beat_id = str(selection["beat_id"])
+        if beat_id in selection_by_beat:
+            raise ValueError(f"duplicate selection for beat: {beat_id}")
+        selection_by_beat[beat_id] = selection
+
+    taxonomy = load_json(taxonomy_path)
+    visual_rules = selection_rules(taxonomy, "visual")
+    sound_rules = selection_rules(taxonomy, "sound")
+    visual_effects: List[Dict[str, Any]] = []
+    sound_effects: List[Dict[str, Any]] = []
+    decisions: List[Dict[str, Any]] = []
+    for beat in data.get("beats", []):
+        beat_id = str(beat["beat_id"])
+        if beat_id not in selection_by_beat:
+            raise ValueError(f"missing AI selection for beat: {beat_id}")
+        selection = selection_by_beat[beat_id]
+        decision = {"beat_id": beat_id, "reason": selection.get("reason", "")}
+        for asset_type, output, history, rules in (
+            ("visual", visual_effects, visual_effects, visual_rules),
+            ("sound", sound_effects, sound_effects, sound_rules),
+        ):
+            selected_id = selection.get(f"{asset_type}_asset_id")
+            candidates = {item["asset_id"]: item for item in beat.get(f"{asset_type}_candidates", [])}
+            if selected_id is None:
+                if not rules["allow_no_effect"]:
+                    raise ValueError(f"{asset_type} selection is required for beat: {beat_id}")
+                decision[f"{asset_type}_selected"] = None
+                decision[f"{asset_type}_status"] = "no_effect"
+                continue
+            if selected_id not in candidates:
+                raise ValueError(f"{asset_type} selection is not in shortlist for beat {beat_id}: {selected_id}")
+            problem = diversity_problem(str(selected_id), float(beat["start"]), history, rules, asset_type)
+            if problem:
+                raise ValueError(problem)
+            item = selected_item(beat, candidates[selected_id], asset_type, taxonomy)
+            output.append(item)
+            decision[f"{asset_type}_selected"] = selected_id
+            decision[f"{asset_type}_status"] = "selected"
+        decisions.append(decision)
+
+    data["visual_effects"] = visual_effects
+    data["sound_effects"] = sound_effects
+    data["decisions"] = decisions
+    data["ai_review"] = {
+        "required": True,
+        "mode": "choose_from_shortlist_or_no_effect",
+        "status": "approved",
+        "selection_source": str(selections_path),
+    }
+    data["validation"] = {"status": "pending"}
+    return data
+
+
+def validate(plan_path: Path, draft_path: Path | None, catalog_path: Path | None = None, taxonomy_path: Path = DEFAULT_TAXONOMY) -> Dict[str, Any]:
     data = load_json(plan_path)
     problems: List[str] = []
+    taxonomy = load_json(taxonomy_path)
+    catalog_data = load_json(catalog_path) if catalog_path else None
+    catalog_ids = {item.get("asset_id") for item in (catalog_data or {}).get("assets", [])}
+    visual_rules = selection_rules(taxonomy, "visual")
+    sound_rules = selection_rules(taxonomy, "sound")
     for item in data.get("visual_effects", []) + data.get("sound_effects", []):
         if float(item.get("duration", 0)) <= 0:
             problems.append(f"non-positive duration: {item.get('asset_id')}")
         if float(item.get("start", 0)) < 0:
             problems.append(f"negative start: {item.get('asset_id')}")
+        if catalog_data and item.get("asset_id") not in catalog_ids:
+            problems.append(f"asset_id not found in catalog: {item.get('asset_id')}")
+    for item in data.get("visual_effects", []):
+        if not item.get("resource_id"):
+            problems.append(f"video effect lacks real resource_id: {item.get('asset_id')}")
+        if item.get("asset_id") != item.get("resource_id"):
+            problems.append(f"video effect asset_id must equal resource_id: {item.get('asset_id')}")
+        if not item.get("source_identifier"):
+            problems.append(f"video effect lacks source_identifier: {item.get('asset_id')}")
+    for asset_type, rules, key in (("visual", visual_rules, "visual_effects"), ("sound", sound_rules, "sound_effects")):
+        items = data.get(key, [])
+        counts = Counter(item.get("asset_id") for item in items)
+        for asset_id, count in counts.items():
+            if count > int(rules["max_same_effect_per_plan"]):
+                problems.append(f"{asset_type} repeats beyond limit: {asset_id} ({count})")
+        cooldown = float(rules["repeat_cooldown_seconds"])
+        for index, item in enumerate(items):
+            for other in items[index + 1:]:
+                if item.get("asset_id") == other.get("asset_id") and abs(float(item.get("start", 0)) - float(other.get("start", 0))) < cooldown:
+                    problems.append(f"{asset_type} violates repeat cooldown: {item.get('asset_id')}")
+    if data.get("ai_review", {}).get("required") is not True:
+        problems.append("ai_review.required must remain true")
+    if data.get("ai_review", {}).get("status") != "approved":
+        problems.append("ai_review.status must be approved before draft handoff")
     if not data.get("preview_required", True):
         problems.append("preview_required must remain true")
     draft_report: Dict[str, Any] = {}
@@ -279,9 +557,16 @@ def main() -> int:
     p_plan.add_argument("--taxonomy", type=Path, default=DEFAULT_TAXONOMY)
     p_plan.add_argument("--style", default="medical_education")
     p_plan.add_argument("--output", type=Path, required=True)
+    p_select = sub.add_parser("select", help="apply AI selections constrained to a plan's candidate shortlists")
+    p_select.add_argument("--plan", type=Path, required=True)
+    p_select.add_argument("--selections", type=Path, required=True)
+    p_select.add_argument("--taxonomy", type=Path, default=DEFAULT_TAXONOMY)
+    p_select.add_argument("--output", type=Path, required=True)
     p_validate = sub.add_parser("validate")
     p_validate.add_argument("--plan", type=Path, required=True)
     p_validate.add_argument("--draft", type=Path)
+    p_validate.add_argument("--catalog", type=Path)
+    p_validate.add_argument("--taxonomy", type=Path, default=DEFAULT_TAXONOMY)
     p_preview = sub.add_parser("preview")
     p_preview.add_argument("--video", type=Path, required=True)
     p_preview.add_argument("--plan", type=Path, required=True)
@@ -297,11 +582,23 @@ def main() -> int:
             result = plan(args.beats, args.catalog, args.taxonomy, args.style)
             args.output.parent.mkdir(parents=True, exist_ok=True)
             args.output.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
-            emit("succeeded", args.command, {"output": str(args.output), "visual_count": len(result["visual_effects"]), "sound_count": len(result["sound_effects"]), "rejected_count": len(result["rejected"])})
+            emit("succeeded", args.command, {
+                "output": str(args.output),
+                "visual_count": len(result["visual_effects"]),
+                "sound_count": len(result["sound_effects"]),
+                "visual_candidate_count": sum(len(beat.get("visual_candidates", [])) for beat in result["beats"]),
+                "sound_candidate_count": sum(len(beat.get("sound_candidates", [])) for beat in result["beats"]),
+                "rejected_count": len(result["rejected"]),
+            })
         elif args.command == "validate":
-            result = validate(args.plan, args.draft)
+            result = validate(args.plan, args.draft, args.catalog, args.taxonomy)
             emit("succeeded" if result["valid"] else "failed", args.command, result)
             return 0 if result["valid"] else 2
+        elif args.command == "select":
+            result = apply_selections(args.plan, args.selections, args.taxonomy)
+            args.output.parent.mkdir(parents=True, exist_ok=True)
+            args.output.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+            emit("succeeded", args.command, {"output": str(args.output), "visual_count": len(result["visual_effects"]), "sound_count": len(result["sound_effects"])})
         else:
             result = preview(args.video, args.plan, args.output_dir)
             emit("succeeded", args.command, result)

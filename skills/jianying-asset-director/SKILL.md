@@ -40,25 +40,33 @@ plan has been shown to the user.
 4. **Catalog**: run `scripts/asset_director.py catalog` against the local
    JianYing data directory. Use real IDs from `video_scene_effects.csv` and
    `cloud_sound_effects.csv`; never invent IDs from names.
-5. **Match**: run `scripts/asset_director.py plan` with the beat JSON and
-   catalog. Treat the output as candidates, not truth. Reject candidates that
-   violate `references/asset_taxonomy.json` or user preferences.
-6. **Preview gate**: create short previews for every non-trivial candidate,
+5. **Shortlist**: run `scripts/asset_director.py plan` with the beat JSON and
+   catalog. It ranks the full local library deterministically, then emits only
+   the configured per-beat shortlists. It never auto-selects the first ranked
+   effect. Reject candidates that violate `references/asset_taxonomy.json` or
+   user preferences.
+6. **AI selection**: give the AI the beat's representative frame(s),
+   `spoken_text`, purpose, domain style, and its `visual_candidates` /
+   `sound_candidates`. It must return one candidate ID from each shortlist or
+   `null` for no effect. Apply this response using the `select` command; the
+   command rejects invented IDs, duplicate beat decisions, excessive reuse,
+   and effects within the configured cooldown window.
+7. **Preview gate**: create short previews for every non-trivial candidate,
    including captions, PiP, and the candidate audio. Inspect the actual visual
    result and waveform/loudness. Do not use names alone to judge an asset.
    A preview video may be rendered from the source assets before draft creation
    or supplied by the user. Never export a JianYing draft automatically. For a
    supplied preview, extract review clips with:
    `python scripts/asset_director.py preview --video rendered_preview.mp4 --plan plan.json --output-dir preview/`.
-7. **User gate**: output the timestamped plan, selected assets, rejected
+8. **User gate**: output the timestamped plan, selected assets, rejected
    candidates, and unresolved decisions. If the user has asked to proceed,
    continue; otherwise wait for confirmation.
-8. **Build**: call `jianying-editor` in draft-library-only mode to create a
+9. **Build**: call `jianying-editor` in draft-library-only mode to create a
    new draft. Do not launch JianYing, automate its UI, invoke
    `JianyingController`, or call an exporter. Use separate tracks for effects
    and each audio role. Keep source asset IDs, local cache paths, and the
    absolute draft path in the build report.
-9. **Validate**: run `scripts/asset_director.py validate` and the
+10. **Validate**: run `scripts/asset_director.py validate` and the
    `jianying-editor` draft inspector. Check asset existence, effect/audio
    timing, volume, overlap with captions/PiP, opening cleanliness, and that
    the draft contains no generated fallback sound when a library asset was
@@ -87,6 +95,12 @@ plan has been shown to the user.
   unless the effect is specifically designed as a full-screen overlay and the
   preview shows no loss of legibility.
 - Prefer no effect over a semantically wrong effect. Empty beats are valid.
+- Do not send the entire effect library to the AI for every beat. The local
+  shortlist is the token boundary; the AI receives only candidate metadata and
+  relevant video frames.
+- Do not choose a candidate merely because it is ranked first. The model must
+  consider the actual frame, spoken meaning, subtitle/PiP zones, and the
+  recent selection history. The `select` command is the enforcement point.
 
 ## Knowledge Representation
 
@@ -112,7 +126,7 @@ The plan passed to `jianying-editor` must include:
   "captions_srt": "absolute path to captions.srt",
   "speech_timeline": "absolute path to speech_timeline.json",
   "beats": [{"start": 10.66, "end": 15.78, "purpose": "warning", "assets": []}],
-  "visual_effects": [{"asset_id": "...", "name": "...", "start": 10.66, "duration": 0.8, "zone": "full_frame", "score": 0.0}],
+  "visual_effects": [{"asset_id": "real_resource_id", "resource_id": "real_resource_id", "source_identifier": "剪映特效名称", "name": "...", "start": 10.66, "duration": 0.8, "zone": "full_frame", "score": 0.0}],
   "sound_effects": [{"asset_id": "...", "name": "...", "start": 10.66, "duration": 0.7, "track": "SFX_Danger", "volume": 0.12, "score": 0.0}],
   "rejected": [{"asset_id": "...", "reason": "cartoon asset forbidden for medical warning"}],
   "preview_required": true,
@@ -121,6 +135,38 @@ The plan passed to `jianying-editor` must include:
   "validation": {"status": "pending"}
 }
 ```
+
+The initial `plan` output contains only candidates. Apply a structured AI
+decision before draft creation:
+
+```json
+{
+  "selections": [
+    {
+      "beat_id": "warning-01",
+      "visual_asset_id": "real_resource_id_from_visual_candidates",
+      "sound_asset_id": null,
+      "reason": "The frame and phrase need a brief restrained warning accent."
+    }
+  ]
+}
+```
+
+```powershell
+python scripts/asset_director.py select `
+  --plan work/candidate_plan.json `
+  --selections work/ai_selections.json `
+  --output work/selected_plan.json
+
+python scripts/asset_director.py validate `
+  --plan work/selected_plan.json `
+  --catalog work/asset_catalog.json
+```
+
+For a selected visual effect, `asset_id` and `resource_id` are the true
+JianYing resource ID used for auditing. Draft builders must resolve
+`source_identifier` through `VideoSceneEffectType.from_name()` before calling
+`script.add_effect`; they must not pass `asset_id` to `from_name()`.
 
 Read `references/asset_taxonomy.json` before matching and use
 `scripts/asset_director.py --help` for the deterministic catalog, plan, and

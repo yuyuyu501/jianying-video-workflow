@@ -119,8 +119,12 @@ python scripts/run_workflow.py `
 
 Then inspect the rough-cut previews, global SRT, and source mapping. Prepare
 timestamped visual beats on that final timeline and pass them with `--beats` to
-create an asset plan. Only after the user accepts the cut and asset plan should
-`jianying-editor` create a new draft in the local draft library.
+create an asset candidate plan. The asset director searches the whole local
+library but exposes only a constrained shortlist per beat to the AI. The AI
+must select a shortlist ID or explicitly choose no effect; code validates the
+real resource ID, repetition limits, and cooldown before the selected plan can
+reach `jianying-editor`. Only after the user accepts the cut and selected asset
+plan should `jianying-editor` create a new draft in the local draft library.
 
 When the speaker is following a supplied script, pass that script to the rough
 cut stage and review the generated script-alignment report. The rough cut must
@@ -144,6 +148,8 @@ Before handing off the draft, verify:
 - the JianYing draft imports the silent visual on a video track and the
   validated narration on a named audio track; visual-only B-roll is explicitly muted;
 - JianYing effects and sound effects use validated local-library IDs;
+- every AI selection is constrained to its generated shortlist or an explicit
+  no-effect decision, and the plan passes configured repetition limits;
 - every effect-track segment references a real `materials.video_effects` entry;
 - captions, PiP, titles, and effects do not collide.
 

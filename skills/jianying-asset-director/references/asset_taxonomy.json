@@ -1,5 +1,44 @@
 {
-  "version": 1,
+  "version": 2,
+  "selection": {
+    "visual": {
+      "candidate_limit": 15,
+      "min_score": 2.0,
+      "max_same_effect_per_plan": 2,
+      "repeat_cooldown_seconds": 45.0,
+      "allow_no_effect": true
+    },
+    "sound": {
+      "candidate_limit": 10,
+      "min_score": 2.0,
+      "max_same_effect_per_plan": 2,
+      "repeat_cooldown_seconds": 30.0,
+      "allow_no_effect": true
+    }
+  },
+  "keyword_tags": {
+    "全息": "scan",
+    "雷达": "scan",
+    "扫描": "scan",
+    "光束": "highlight",
+    "光效": "highlight",
+    "光圈": "highlight",
+    "聚光": "highlight",
+    "霓虹": "highlight",
+    "闪光": "impact",
+    "闪屏": "impact",
+    "闪切": "transition",
+    "震动": "impact",
+    "抖动": "impact",
+    "扭曲": "glitch",
+    "色散": "glitch",
+    "快门": "impact",
+    "放大": "highlight",
+    "标记": "confirmation",
+    "箭头": "confirmation",
+    "心电": "warning",
+    "警报": "warning"
+  },
   "style_profiles": {
     "medical_education": {
       "preferred": ["restrained", "documentary", "warning", "confirmation", "scan", "whoosh"],
