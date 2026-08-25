@@ -293,6 +293,36 @@ def candidate_record(score: float, reasons: List[str], asset: Dict[str, Any]) ->
     return record
 
 
+def shortlist_candidates(
+    ranked: List[Tuple[float, List[str], Dict[str, Any]]],
+    purpose: str,
+    style: Dict[str, Any],
+    taxonomy: Dict[str, Any],
+    limit: int,
+) -> List[Tuple[float, List[str], Dict[str, Any]]]:
+    """Keep the top scores while guaranteeing purpose-tag coverage."""
+    if limit <= 0:
+        return []
+    purpose_rule = taxonomy.get("beat_purposes", {}).get(purpose, {})
+    required_tags = set(purpose_rule.get("preferred", []))
+    selected: List[Tuple[float, List[str], Dict[str, Any]]] = []
+    selected_ids = set()
+    for tag in sorted(required_tags):
+        match = next((item for item in ranked if tag in set(item[2].get("tags", []))), None)
+        if match and match[2].get("asset_id") not in selected_ids:
+            selected.append(match)
+            selected_ids.add(match[2].get("asset_id"))
+    for item in ranked:
+        if len(selected) >= limit:
+            break
+        asset_id = item[2].get("asset_id")
+        if asset_id not in selected_ids:
+            selected.append(item)
+            selected_ids.add(asset_id)
+    rank = {item[2].get("asset_id"): index for index, item in enumerate(ranked)}
+    return sorted(selected, key=lambda item: rank[item[2].get("asset_id")])
+
+
 def diversity_problem(
     asset_id: str,
     start: float,
@@ -336,13 +366,19 @@ def plan(beats_path: Path, catalog_path: Path, taxonomy_path: Path, style_name: 
         purpose = beat["purpose"]
         ranked_visual = rank_candidates(visual_assets, purpose, style, taxonomy, "visual")
         ranked_sound = rank_candidates(sound_assets, purpose, style, taxonomy, "sound")
+        visual_shortlist = shortlist_candidates(
+            ranked_visual, purpose, style, taxonomy, int(visual_rules["candidate_limit"])
+        )
+        sound_shortlist = shortlist_candidates(
+            ranked_sound, purpose, style, taxonomy, int(sound_rules["candidate_limit"])
+        )
         beat["visual_candidates"] = [
             candidate_record(score, reasons, asset)
-            for score, reasons, asset in ranked_visual[: int(visual_rules["candidate_limit"])]
+            for score, reasons, asset in visual_shortlist
         ]
         beat["sound_candidates"] = [
             candidate_record(score, reasons, asset)
-            for score, reasons, asset in ranked_sound[: int(sound_rules["candidate_limit"])]
+            for score, reasons, asset in sound_shortlist
         ]
         decisions.append({
             "beat_id": beat["beat_id"],

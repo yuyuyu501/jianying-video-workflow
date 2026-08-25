@@ -105,6 +105,17 @@ class AssetDirectorTests(unittest.TestCase):
             report = asset_director.validate(selected_plan, None, catalog, taxonomy)
             self.assertTrue(report["valid"], report["problems"])
 
+    def test_shortlist_covers_purpose_tag_beyond_top_scores(self):
+        with tempfile.TemporaryDirectory() as directory:
+            taxonomy = dict(TAXONOMY)
+            taxonomy["beat_purposes"] = {"time_pressure": {"preferred": ["timer"], "forbidden": [], "max_duration": 1.0}}
+            taxonomy["selection"] = {"visual": {"candidate_limit": 2, "min_score": 2.0, "max_same_effect_per_plan": 1, "repeat_cooldown_seconds": 10, "allow_no_effect": True}, "sound": TAXONOMY["selection"]["sound"]}
+            taxonomy_path = self.write_json(directory, "taxonomy.json", taxonomy)
+            catalog = self.write_json(directory, "catalog.json", {"assets": [asset("a", "冲击A", ["warning"]), asset("b", "冲击B", ["warning"]), asset("timer", "倒计时", ["timer"])]})
+            beats = self.write_json(directory, "beats.json", {"beats": [{"beat_id": "one", "start": 0, "end": 1, "purpose": "time_pressure"}]})
+            output = asset_director.plan(beats, catalog, taxonomy_path, "medical_education")
+            self.assertIn("timer", [item["asset_id"] for item in output["beats"][0]["visual_candidates"]])
+
 
 if __name__ == "__main__":
     unittest.main()
