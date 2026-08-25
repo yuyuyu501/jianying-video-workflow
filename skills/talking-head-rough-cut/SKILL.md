@@ -28,6 +28,8 @@ current job directory.
    a silent visual MP4, a narration-only M4A, and a muxed review MP4 from the
    same EDL. Run `validate` before any captions, effects, or draft creation.
    Inspect the opening, every cut boundary, and the end of the review MP4.
+   After caption generation, require caption QC against the final SRT, speech
+   timeline, and approved reference script before effects.
 
 ## Cut Rules
 

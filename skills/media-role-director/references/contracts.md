@@ -55,6 +55,13 @@ It writes two files:
 - `speech_timeline.json`: the same final times plus `source_id`, source video,
   original source start/end, role, and audio policy.
 
+It also writes `captions.qc.json`. This report must have `status: succeeded`
+before asset selection or draft construction. When a reference script is
+available, pass it to `captions --reference-script`; caption QC rejects a
+short subtitle tail that is skipped before the next subtitle begins. Longer
+script differences remain explicit editorial-review findings because they may
+be approved paraphrases or semantic removals.
+
 The mapping expects cuts to occur between spoken phrases. If a proposed cut
 splits a Whisper segment, review the result before using it for final captions.
 

@@ -17,6 +17,7 @@ video-understand (external)
 -> talking-head-rough-cut (bundled) + FFmpeg
 -> validated silent visual + independent narration + review MP4
 -> global captions.srt + speech_timeline.json
+-> caption QC: source mapping, text completeness, and reference-script coverage
 -> video-understand (final-timeline representative frames)
 -> jianying-asset-director (bundled)
 -> scene-effect/SFX shortlist and AI selection
@@ -116,6 +117,7 @@ python scripts/run_workflow.py `
   --video "C:\path\to\illustration.mp4" `
   --media-decisions "work\media_decisions.json" `
   --semantic-exclusions "work\approved_semantic_cuts.json" `
+  --reference-script "C:\path\to\approved-script.txt" `
   --render-rough-cut `
   --output-dir "work\video-job"
 ```
@@ -137,6 +139,10 @@ cut stage and review the generated script-alignment report. The rough cut must
 remove unrelated setup, false starts, repeated explanations, and on-camera
 corrections before captions or B-roll are timed.
 
+For rendered speech-led jobs, `--reference-script` is required for caption
+completeness QC. Use `--allow-no-reference-script` only when no approved copy
+exists; the report then records that script-level completeness was unavailable.
+
 ## Draft Handoff Gate
 
 Before handing off the draft, verify:
@@ -150,6 +156,9 @@ Before handing off the draft, verify:
   EDL within audio-frame tolerance; narration has no unplanned long silence;
 - `captions.srt` and `speech_timeline.json` map surviving speech to the final
   timeline and retain each source-video reference;
+- `captions.qc.json` passed: SRT and speech timeline agree in count, text, and
+  timestamps; there is no unaccounted long subtitle gap; a reference-script
+  sentence is not silently truncated;
 - the approved rough-cut review has video, audio, compatible codecs, and no black frames;
 - the JianYing draft imports the silent visual on a video track and the
   validated narration on a named audio track; visual-only B-roll is explicitly muted;
@@ -179,6 +188,12 @@ narration M4A on separate tracks. Validate narration coverage before handoff:
 
 ```powershell
 python scripts/validate_draft_narration.py --draft-name "DraftName" --expected-duration 340.847
+```
+
+Then verify that the `Subtitles` track exactly reproduces the approved SRT:
+
+```powershell
+python scripts/validate_draft_captions.py --draft-name "DraftName" --srt "work\captions\captions.srt"
 ```
 
 Report the draft name and absolute draft-library path. A rough-cut preview is

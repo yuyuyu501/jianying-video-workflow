@@ -68,12 +68,14 @@ def source_exclusions(path: Path | None, source_id: str, speech_source_count: in
 def main() -> int:
     parser = argparse.ArgumentParser(description="Prepare a reviewed multi-source JianYing content-to-draft workflow")
     parser.add_argument("--video", type=Path, action="append", required=True, help="Input video; repeat for each source asset")
-    parser.add_argument("--srt", type=Path, help="Optional externally reviewed global SRT; otherwise generate after rough cutting")
+    parser.add_argument("--srt", type=Path, help="Externally reviewed global SRT; requires --speech-timeline and is always caption-QC checked")
+    parser.add_argument("--speech-timeline", type=Path, help="Required companion JSON for --srt")
     parser.add_argument("--beats", type=Path)
     parser.add_argument("--style", default="medical_education")
     parser.add_argument("--media-decisions", type=Path, help="Reviewed media-role-director decisions JSON")
     parser.add_argument("--semantic-exclusions", type=Path, help="Reviewed cuts; use a per-source mapping when multiple narration sources exist")
     parser.add_argument("--reference-script", type=Path, help="Approved script/copy used to audit off-topic and repeated speech")
+    parser.add_argument("--allow-no-reference-script", action="store_true", help="Explicitly allow caption QC without script-completeness checks")
     parser.add_argument("--render-rough-cut", action="store_true", help="Render every approved narration rough cut and then generate global captions")
     parser.add_argument("--skip-captions", action="store_true", help="Do not generate captions after rendering rough cuts")
     parser.add_argument("--rough-cut-quality", choices=("preview", "final"), default="preview")
@@ -85,6 +87,11 @@ def main() -> int:
         raise FileNotFoundError(", ".join(missing_videos))
     if args.skip_captions and not args.render_rough_cut:
         raise ValueError("--skip-captions only applies with --render-rough-cut")
+    if bool(args.srt) != bool(args.speech_timeline):
+        raise ValueError("--srt and --speech-timeline must be supplied together")
+    for path in (args.srt, args.speech_timeline):
+        if path and not path.is_file():
+            raise FileNotFoundError(path)
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
     skills = {name: locate_skill(name) for name in ["video-understand", "media-role-director", "talking-head-rough-cut", "jianying-asset-director", "jianying-editor"]}
@@ -119,6 +126,9 @@ def main() -> int:
         raise FileNotFoundError(args.media_decisions)
     if args.reference_script and not args.reference_script.is_file():
         raise FileNotFoundError(args.reference_script)
+    captions_requested = bool(args.srt) or (args.render_rough_cut and not args.skip_captions)
+    if captions_requested and not args.reference_script and not args.allow_no_reference_script:
+        raise ValueError("--reference-script is required for caption completeness QC; pass --allow-no-reference-script only when no approved copy exists")
 
     manifest_path = args.output_dir / "media_manifest.json"
     run([
@@ -214,14 +224,32 @@ def main() -> int:
 
     generated_srt = None
     speech_timeline = None
-    if args.render_rough_cut and not args.skip_captions:
+    caption_qc = None
+    if args.srt:
         captions_dir = args.output_dir / "captions"
-        run([
+        generated_srt = args.srt.resolve()
+        speech_timeline = args.speech_timeline.resolve()
+        caption_qc_command = [
+            sys.executable, str(skills["media-role-director"] / "scripts" / "media_role_director.py"), "caption-qc",
+            "--srt", str(generated_srt), "--speech-timeline", str(speech_timeline),
+            "--output", str(captions_dir / "captions.qc.json"),
+        ]
+        if args.reference_script:
+            caption_qc_command.extend(["--reference-script", str(args.reference_script.resolve())])
+        run(caption_qc_command)
+        caption_qc = captions_dir / "captions.qc.json"
+    elif args.render_rough_cut and not args.skip_captions:
+        captions_dir = args.output_dir / "captions"
+        captions_command = [
             sys.executable, str(skills["media-role-director"] / "scripts" / "media_role_director.py"), "captions",
             "--manifest", str(manifest_path), "--output-dir", str(captions_dir),
-        ])
+        ]
+        if args.reference_script:
+            captions_command.extend(["--reference-script", str(args.reference_script.resolve())])
+        run(captions_command)
         generated_srt = captions_dir / "captions.srt"
         speech_timeline = captions_dir / "speech_timeline.json"
+        caption_qc = captions_dir / "captions.qc.json"
 
     catalog_json = args.output_dir / "asset_catalog.json"
     run([sys.executable, str(skills["jianying-asset-director"] / "scripts" / "asset_director.py"), "catalog", "--output", str(catalog_json)])
@@ -251,8 +279,9 @@ def main() -> int:
             }
             for source_id in previews
         },
-        "captions_srt": str(args.srt.resolve()) if args.srt else (str(generated_srt) if generated_srt else None),
+        "captions_srt": str(generated_srt) if generated_srt else None,
         "speech_timeline": str(speech_timeline) if speech_timeline else None,
+        "captions_qc": str(caption_qc) if caption_qc else None,
         "asset_catalog": str(catalog_json),
         "asset_plan": str(asset_plan) if asset_plan else None,
         "next_step": "Use the reviewed media manifest, captions SRT, and speech timeline to prepare timestamped visual beats before creating a JianYing draft-library project.",

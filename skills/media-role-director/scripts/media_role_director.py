@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -287,6 +288,121 @@ def srt_time(seconds: float) -> str:
     return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
 
 
+def parse_srt_time(value: str) -> float:
+    match = re.fullmatch(r"(\d{2}):(\d{2}):(\d{2}),(\d{3})", value.strip())
+    if not match:
+        raise ValueError(f"invalid SRT timestamp: {value!r}")
+    hours, minutes, seconds, millis = (int(part) for part in match.groups())
+    return hours * 3600 + minutes * 60 + seconds + millis / 1000
+
+
+def read_srt(path: Path) -> list[dict[str, Any]]:
+    blocks = re.split(r"\r?\n\s*\r?\n", path.read_text(encoding="utf-8").strip())
+    entries = []
+    for block in blocks:
+        lines = [line.strip() for line in block.splitlines()]
+        if len(lines) < 3 or not lines[0].isdigit() or " --> " not in lines[1]:
+            raise ValueError(f"invalid SRT block: {block[:80]!r}")
+        start_text, end_text = lines[1].split(" --> ", 1)
+        start, end = parse_srt_time(start_text), parse_srt_time(end_text)
+        text = "\n".join(lines[2:]).strip()
+        if not text or end <= start:
+            raise ValueError(f"invalid SRT entry {lines[0]}")
+        entries.append({"index": int(lines[0]), "start": start, "end": end, "text": text})
+    return entries
+
+
+def normalize_caption_text(value: str) -> str:
+    normalized = re.sub(r"[^\w\u4e00-\u9fff]+", "", value).lower()
+    return re.sub(r"[的地了呢啊呀吧嘛]", "", normalized)
+
+
+def reference_truncations(entries: list[dict[str, Any]], reference_script: Path | None) -> list[dict[str, Any]]:
+    """Find an exact reference prefix whose skipped suffix is absent from the next subtitle."""
+    if reference_script is None:
+        return []
+    reference = normalize_caption_text(reference_script.read_text(encoding="utf-8"))
+    problems = []
+    for index, entry in enumerate(entries[:-1]):
+        text = normalize_caption_text(entry["text"])
+        next_text = normalize_caption_text(entries[index + 1]["text"])
+        if len(text) < 4 or not next_text:
+            continue
+        start = reference.find(text)
+        while start >= 0:
+            remaining = reference[start + len(text):]
+            if remaining:
+                continuation = next_text[: min(4, len(next_text))]
+                next_position = remaining.find(continuation)
+                # A short skipped suffix immediately before the next subtitle is
+                # a likely truncated utterance. Longer script differences are
+                # often approved paraphrases or semantic rough-cut removals.
+                if 3 <= next_position <= 8:
+                    problems.append({
+                        "index": entry["index"],
+                        "text": entry["text"],
+                        "missing_prefix": remaining[:next_position],
+                        "next_text": entries[index + 1]["text"],
+                    })
+                    break
+            start = reference.find(text, start + 1)
+    return problems
+
+
+def caption_qc(
+    srt_path: Path,
+    timeline_path: Path,
+    reference_script: Path | None = None,
+    max_gap: float = 4.0,
+) -> dict[str, Any]:
+    srt_entries = read_srt(srt_path)
+    timeline = read_json(timeline_path)
+    timeline_entries = timeline.get("captions", []) if isinstance(timeline, dict) else []
+    errors: list[str] = []
+    warnings: list[str] = []
+    if not srt_entries:
+        errors.append("SRT has no caption entries")
+    if not timeline_entries:
+        errors.append("speech timeline has no caption entries")
+    if len(srt_entries) != len(timeline_entries):
+        errors.append(f"SRT/timeline caption count differs: {len(srt_entries)} != {len(timeline_entries)}")
+    for index, (srt_entry, timeline_entry) in enumerate(zip(srt_entries, timeline_entries), start=1):
+        if srt_entry["index"] != index:
+            errors.append(f"SRT index is not sequential at entry {index}")
+        if srt_entry["text"] != str(timeline_entry.get("text", "")).strip():
+            errors.append(f"SRT/timeline text differs at entry {index}")
+        timeline_start = float(timeline_entry.get("timeline_start", timeline_entry.get("start", -1)))
+        timeline_end = float(timeline_entry.get("timeline_end", timeline_entry.get("end", -1)))
+        if abs(srt_entry["start"] - timeline_start) > 0.001 or abs(srt_entry["end"] - timeline_end) > 0.001:
+            errors.append(f"SRT/timeline time differs at entry {index}")
+    for previous, current in zip(srt_entries, srt_entries[1:]):
+        gap = current["start"] - previous["end"]
+        if gap < -0.001:
+            errors.append(f"overlapping captions: {previous['index']} and {current['index']}")
+        elif gap > max_gap:
+            errors.append(f"unexplained caption gap {gap:.3f}s after entry {previous['index']}")
+    truncations = reference_truncations(srt_entries, reference_script)
+    for problem in truncations:
+        errors.append(f"reference text appears truncated at entry {problem['index']}: missing {problem['missing_prefix']!r}")
+    duration = float(timeline.get("duration", 0.0)) if isinstance(timeline, dict) else 0.0
+    if srt_entries and duration and srt_entries[-1]["end"] > duration + 0.1:
+        errors.append("final caption ends after speech timeline duration")
+    if srt_entries and duration and duration - srt_entries[-1]["end"] > max_gap:
+        errors.append(f"final caption ends {duration - srt_entries[-1]['end']:.3f}s before speech timeline")
+    return {
+        "status": "succeeded" if not errors else "failed",
+        "srt": str(srt_path),
+        "speech_timeline": str(timeline_path),
+        "reference_script": str(reference_script) if reference_script else None,
+        "caption_count": len(srt_entries),
+        "timeline_duration": round(duration, 3),
+        "last_caption_end": round(srt_entries[-1]["end"], 3) if srt_entries else None,
+        "truncations": truncations,
+        "warnings": warnings,
+        "errors": errors,
+    }
+
+
 def captions(args: argparse.Namespace) -> int:
     manifest = read_json(args.manifest.resolve())
     if manifest.get("unresolved_sources"):
@@ -364,8 +480,23 @@ def captions(args: argparse.Namespace) -> int:
         ],
     }
     write_json(timeline_path, timeline)
-    emit("succeeded", "captions", srt=str(srt_path), speech_timeline=str(timeline_path), captions=len(entries), duration=round(cursor, 3))
+    reference_script = args.reference_script.resolve() if args.reference_script else None
+    report = caption_qc(srt_path, timeline_path, reference_script)
+    qc_path = output_dir / "captions.qc.json"
+    write_json(qc_path, report)
+    if report["status"] != "succeeded":
+        raise ValueError("caption QC failed: " + "; ".join(report["errors"]))
+    emit("succeeded", "captions", srt=str(srt_path), speech_timeline=str(timeline_path), qc=str(qc_path), captions=len(entries), duration=round(cursor, 3))
     return 0
+
+
+def caption_qc_command(args: argparse.Namespace) -> int:
+    reference_script = args.reference_script.resolve() if args.reference_script else None
+    report = caption_qc(args.srt.resolve(), args.speech_timeline.resolve(), reference_script, args.max_gap)
+    if args.output:
+        write_json(args.output.resolve(), report)
+    emit(report["status"], "caption-qc", **{key: value for key, value in report.items() if key != "status"})
+    return 0 if report["status"] == "succeeded" else 2
 
 
 def validate(args: argparse.Namespace) -> int:
@@ -410,7 +541,15 @@ def parser() -> argparse.ArgumentParser:
     captions_parser = commands.add_parser("captions", help="Create final-timeline SRT and source mapping")
     captions_parser.add_argument("--manifest", type=Path, required=True)
     captions_parser.add_argument("--output-dir", type=Path, required=True)
+    captions_parser.add_argument("--reference-script", type=Path, help="Approved copy used to reject unacknowledged subtitle truncation")
     captions_parser.set_defaults(handler=captions)
+    caption_qc_parser = commands.add_parser("caption-qc", help="Verify SRT, speech timeline, and optional approved copy before draft creation")
+    caption_qc_parser.add_argument("--srt", type=Path, required=True)
+    caption_qc_parser.add_argument("--speech-timeline", type=Path, required=True)
+    caption_qc_parser.add_argument("--reference-script", type=Path)
+    caption_qc_parser.add_argument("--max-gap", type=float, default=4.0)
+    caption_qc_parser.add_argument("--output", type=Path)
+    caption_qc_parser.set_defaults(handler=caption_qc_command)
     validate_parser = commands.add_parser("validate", help="Validate a reviewed media manifest")
     validate_parser.add_argument("--manifest", type=Path, required=True)
     validate_parser.set_defaults(handler=validate)

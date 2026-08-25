@@ -25,8 +25,11 @@ clip is not the primary talking head.
 5. Render every approved narration plan into a silent visual MP4, narration
    M4A, review MP4, and successful QC report. Attach that full artifact set to
    the manifest, then run `captions`. A plan alone never authorizes caption
-   generation. This produces a final-timeline `captions.srt` and a
-   `speech_timeline.json` source mapping for `jianying-asset-director`.
+   generation. `captions` writes a final-timeline `captions.srt`, a
+   `speech_timeline.json` source mapping, and `captions.qc.json`. Caption QC
+   must pass before effects or draft creation; when an approved script exists,
+   pass `--reference-script` so unacknowledged sentence-tail truncation blocks
+   the workflow.
 
 ## Roles And Audio Policies
 
@@ -59,6 +62,12 @@ not insert a standalone visual-only duration between narration sources after
 captions are generated: it would shift every later subtitle. If an edit needs
 such inserted material, rebuild the speech timeline and SRT after the final
 timeline is known.
+
+Caption QC rejects SRT/timeline count, text, or timing disagreement, overlap,
+and a short reference-script sentence tail skipped before the next subtitle.
+Longer script differences are reported for editorial review because they may be
+approved paraphrases or semantic removals. An externally supplied SRT requires
+its speech timeline and the same `caption-qc` gate.
 
 Read [references/contracts.md](references/contracts.md) before creating or
 modifying decision files. Use `scripts/media_role_director.py --help` for the
