@@ -19,12 +19,13 @@ video-understand (external)
 -> global captions.srt + speech_timeline.json
 -> caption QC: source mapping, text completeness, and reference-script coverage
 -> video-understand (final-timeline representative frames)
+-> new JianYing draft skeleton + named-track QC
 -> jianying-asset-director (bundled)
 -> scene-effect/SFX shortlist and AI selection
 -> character-effect shortlist and AI selection
 -> jianying-editor (external)
--> JianYing draft-library creation with Effects + CharacterEffects tracks
--> post-build composition QC and structural validation
+-> materialize the approved plan on the existing named tracks
+-> per-stage and post-build composition QC
 ```
 
 ## Repository Layout
@@ -118,21 +119,32 @@ python scripts/run_workflow.py `
   --media-decisions "work\media_decisions.json" `
   --semantic-exclusions "work\approved_semantic_cuts.json" `
   --reference-script "C:\path\to\approved-script.txt" `
+  --beats "work\final-timeline-beats.json" `
+  --draft-name "Heart_Emergency_2026-08-25" `
   --render-rough-cut `
   --output-dir "work\video-job"
 ```
 
 Then inspect the rough-cut previews, global SRT, and source mapping. Prepare
-timestamped visual beats on that final timeline and pass them with `--beats` to
-create an asset candidate plan. The asset director searches the whole local
-library but exposes only constrained shortlists per beat to the AI. Scene
-effects, sound effects, and person/face effects are separate decisions. Person
-effects are considered only for beats with a visible face and no full-height
-B-roll. The AI must select a shortlist ID or explicitly choose no effect; code
-validates the real resource ID, repetition limits, cooldown, effect type, and
-eligibility before the selected plan can reach `jianying-editor`. Only after
-the user accepts the cut and selected asset plan should `jianying-editor`
-create a new draft in the local draft library.
+timestamped visual beats on that final timeline and pass them with `--beats`
+and a new `--draft-name`. The workflow first creates a draft skeleton and
+stops unless its empty, named tracks pass QC: `MainVisual`, muted `B_Roll`,
+`Narration`, `SFX`, `Effects`, `CharacterEffects`, and `Subtitles`. It refuses
+to reuse a draft name unless `--overwrite` is explicitly passed to the skeleton
+script. This separates track structure from creative edits.
+
+Pass `--jianying-python "C:\path\to\python.exe"` or set `JY_PYTHON` when the
+interpreter running the workflow lacks `jianying-editor` dependencies. The
+selected interpreter is used only for draft-library construction; it never
+launches JianYing or exports a video.
+
+The asset director then searches the whole local library but exposes only
+constrained shortlists per beat to the AI. Scene effects, sound effects, and
+person/face effects are separate decisions. Person effects are considered only
+for beats with a visible face and no full-height B-roll. The AI must select a
+shortlist ID or explicitly choose no effect; code validates the real resource
+ID, repetition limits, cooldown, effect type, and eligibility before it can be
+materialized on the existing draft tracks.
 
 When the speaker is following a supplied script, pass that script to the rough
 cut stage and review the generated script-alignment report. The rough cut must
@@ -159,9 +171,13 @@ Before handing off the draft, verify:
 - `captions.qc.json` passed: SRT and speech timeline agree in count, text, and
   timestamps; there is no unaccounted long subtitle gap; a reference-script
   sentence is not silently truncated;
+- `draft_skeleton.qc.json` passed before any effect, subtitle, or B-roll
+  segment is written; all required tracks exist once with the correct type and
+  `B_Roll` begins muted;
 - the approved rough-cut review has video, audio, compatible codecs, and no black frames;
-- the JianYing draft imports the silent visual on a video track and the
-  validated narration on a named audio track; visual-only B-roll is explicitly muted;
+- the JianYing draft imports the silent visual on `MainVisual` and the
+  validated narration on `Narration`; visual-only B-roll remains explicitly
+  muted on `B_Roll`;
 - JianYing effects and sound effects use validated local-library IDs;
 - every AI selection is constrained to its generated shortlist or an explicit
   no-effect decision, and the plan passes configured repetition limits;
@@ -176,11 +192,18 @@ Do not use `JyProject.add_effect_simple` to create a JianYing effect track: it
 can leave timeline placeholders without a `video_effect` material. Resolve the
 approved scene-effect name through `pyJianYingDraft.VideoSceneEffectType` and
 person-effect name through `VideoCharacterEffectType`, then call
-`project.script.add_effect(...)` with a `Timerange` on the named track. Run
-post-build composition QC and validate the saved draft before handoff:
+`project.script.add_effect(...)` with a `Timerange` on the already-created
+named track. Run post-build composition QC and validate the saved draft before
+handoff:
 
 ```powershell
 python scripts/validate_draft_effects.py --draft-name "DraftName" --expected-count 10
+```
+
+The skeleton itself can be checked independently:
+
+```powershell
+python scripts/validate_draft_skeleton.py --draft-name "DraftName"
 ```
 
 For speech-led drafts, import the silent visual rough cut and the validated

@@ -499,8 +499,11 @@ def selected_item(
         item["duration"] = min(max_duration, max(0.4, beat["end"] - beat["start"]))
         item["zone"] = beat.get("effect_zone", "full_frame") if asset_type == "visual" else "face_target"
     else:
+        track = str(beat.get("sound_track", "SFX"))
+        if track != "SFX":
+            raise ValueError(f"sound effect track must be 'SFX' for the validated draft skeleton, got {track!r}")
         item["duration"] = max_duration
-        item["track"] = beat.get("sound_track", "SFX_Accent")
+        item["track"] = track
         item["volume"] = beat.get("volume", 0.12)
     for key in ("resource_id", "effect_id", "md5", "source_identifier"):
         if candidate.get(key):

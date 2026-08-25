@@ -111,6 +111,15 @@ class AssetDirectorTests(unittest.TestCase):
             report = asset_director.validate(selected_plan, None, catalog, taxonomy)
             self.assertTrue(report["valid"], report["problems"])
 
+    def test_sound_effects_target_the_validated_sfx_track(self):
+        candidate = {**asset("sound", "提示音", ["warning"]), "score": 3.0, "reasons": ["warning"]}
+        taxonomy = TAXONOMY
+        beat = {"beat_id": "one", "start": 0, "end": 1, "purpose": "warning"}
+        selected = asset_director.selected_item(beat, candidate, "sound", taxonomy)
+        self.assertEqual(selected["track"], "SFX")
+        with self.assertRaisesRegex(ValueError, "must be 'SFX'"):
+            asset_director.selected_item({**beat, "sound_track": "SFX_Accent"}, candidate, "sound", taxonomy)
+
     def test_shortlist_covers_purpose_tag_beyond_top_scores(self):
         with tempfile.TemporaryDirectory() as directory:
             taxonomy = dict(TAXONOMY)

@@ -1,6 +1,6 @@
 {
   "name": "jianying-video-workflow",
-  "version": 9,
+  "version": 10,
   "workflow_skill": "jianying-video-workflow",
   "internal_skills": [
     {
@@ -50,6 +50,7 @@
     "CODEX_HOME": "Optional Codex installation root",
     "JY_SKILL_ROOT": "Optional jianying-editor Skill root",
     "JY_ASSET_DIRECTOR_DATA_DIR": "Optional JianYing asset index directory",
-    "PYTHONUTF8": "Set to 1 on Windows when running video-understand"
+    "PYTHONUTF8": "Set to 1 on Windows when running video-understand",
+    "JY_PYTHON": "Optional absolute Python executable with jianying-editor dependencies for draft construction"
   }
 }

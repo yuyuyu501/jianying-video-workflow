@@ -71,6 +71,11 @@ def main() -> int:
     parser.add_argument("--srt", type=Path, help="Externally reviewed global SRT; requires --speech-timeline and is always caption-QC checked")
     parser.add_argument("--speech-timeline", type=Path, help="Required companion JSON for --srt")
     parser.add_argument("--beats", type=Path)
+    parser.add_argument("--draft-name", help="New JianYing draft name; required with --beats to create the validated track skeleton")
+    parser.add_argument("--draft-width", type=int, default=1080)
+    parser.add_argument("--draft-height", type=int, default=1920)
+    parser.add_argument("--drafts-root", type=Path, help="Optional JianYing draft-library root")
+    parser.add_argument("--jianying-python", type=Path, help="Python environment with jianying-editor dependencies; defaults to JY_PYTHON or this interpreter")
     parser.add_argument("--style", default="medical_education")
     parser.add_argument("--media-decisions", type=Path, help="Reviewed media-role-director decisions JSON")
     parser.add_argument("--semantic-exclusions", type=Path, help="Reviewed cuts; use a per-source mapping when multiple narration sources exist")
@@ -89,6 +94,11 @@ def main() -> int:
         raise ValueError("--skip-captions only applies with --render-rough-cut")
     if bool(args.srt) != bool(args.speech_timeline):
         raise ValueError("--srt and --speech-timeline must be supplied together")
+    if bool(args.beats) != bool(args.draft_name):
+        raise ValueError("--beats and --draft-name must be supplied together so analysis starts from a validated draft skeleton")
+    jianying_python = args.jianying_python or Path(os.environ.get("JY_PYTHON", "").strip() or sys.executable)
+    if not jianying_python.is_file():
+        raise FileNotFoundError(f"JianYing Python executable not found: {jianying_python}")
     for path in (args.srt, args.speech_timeline):
         if path and not path.is_file():
             raise FileNotFoundError(path)
@@ -251,6 +261,26 @@ def main() -> int:
         speech_timeline = captions_dir / "speech_timeline.json"
         caption_qc = captions_dir / "captions.qc.json"
 
+    skeleton_draft = None
+    skeleton_qc = None
+    if args.beats:
+        if generated_srt is None or speech_timeline is None or caption_qc is None:
+            raise RuntimeError("draft skeleton creation requires captions and a passed caption QC report")
+        skeleton_qc = args.output_dir / "draft_skeleton.qc.json"
+        skeleton_command = [
+            str(jianying_python.resolve()), str(Path(__file__).resolve().with_name("create_draft_skeleton.py")),
+            "--draft-name", args.draft_name,
+            "--width", str(args.draft_width), "--height", str(args.draft_height),
+            "--output", str(skeleton_qc),
+        ]
+        if args.drafts_root:
+            skeleton_command.extend(["--drafts-root", str(args.drafts_root.resolve())])
+        run(skeleton_command)
+        skeleton_report = read_json(skeleton_qc)
+        if not isinstance(skeleton_report, dict) or skeleton_report.get("status") != "passed":
+            raise RuntimeError("draft skeleton validation did not pass")
+        skeleton_draft = skeleton_report.get("draft_path")
+
     catalog_json = args.output_dir / "asset_catalog.json"
     run([sys.executable, str(skills["jianying-asset-director"] / "scripts" / "asset_director.py"), "catalog", "--output", str(catalog_json)])
     asset_plan = None
@@ -282,9 +312,11 @@ def main() -> int:
         "captions_srt": str(generated_srt) if generated_srt else None,
         "speech_timeline": str(speech_timeline) if speech_timeline else None,
         "captions_qc": str(caption_qc) if caption_qc else None,
+        "draft_skeleton": skeleton_draft,
+        "draft_skeleton_qc": str(skeleton_qc) if skeleton_qc else None,
         "asset_catalog": str(catalog_json),
         "asset_plan": str(asset_plan) if asset_plan else None,
-        "next_step": "Use the reviewed media manifest, captions SRT, and speech timeline to prepare timestamped visual beats before creating a JianYing draft-library project.",
+        "next_step": "Use the validated draft skeleton's named tracks for scene effects, character effects, subtitle styling, and muted B-roll assembly; validate after each write stage.",
     }
     print("RESULT: " + json.dumps(result, ensure_ascii=False))
     return 0
