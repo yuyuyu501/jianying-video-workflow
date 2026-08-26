@@ -395,6 +395,63 @@ def coverage_report(entries: list[dict[str, Any]], speech_ranges: list[dict[str,
     }
 
 
+CAPTION_BREAK_PUNCTUATION = frozenset("\uFF0C,\u3001\uFF1B;\u3002\uFF01\uFF1F!?\uFF1A:")
+CAPTION_MAX_CHARS = 18
+
+
+def caption_reading_weight(text: str) -> int:
+    """Estimate speech time without letting punctuation consume a full share."""
+    return max(1, sum(1 for character in text if not character.isspace() and character not in CAPTION_BREAK_PUNCTUATION))
+
+
+def split_caption_entry(entry: dict[str, Any], max_chars: int = CAPTION_MAX_CHARS) -> list[dict[str, Any]]:
+    """Split a reviewed rough-cut caption at commas and sentence punctuation.
+
+    The review remains the source of truth for text and timing. Splitting happens
+    only after review, and proportionally subdivides its existing time range so
+    the final SRT remains continuous on the rendered rough-cut timeline.
+    """
+    if max_chars < 2:
+        raise ValueError("max_chars must be at least 2")
+    text = str(entry["text"]).strip()
+    start, end = float(entry["start"]), float(entry["end"])
+    if not text or end <= start:
+        raise ValueError("caption entry requires non-empty text and positive range")
+
+    chunks: list[str] = []
+    current = ""
+    for character in text:
+        current += character
+        if character in CAPTION_BREAK_PUNCTUATION:
+            chunks.append(current.strip())
+            current = ""
+        elif caption_reading_weight(current) >= max_chars:
+            chunks.append(current.strip())
+            current = ""
+    if current.strip():
+        chunks.append(current.strip())
+    chunks = [chunk for chunk in chunks if chunk]
+    if len(chunks) == 1:
+        return [{**entry, "start": round(start, 3), "end": round(end, 3), "text": chunks[0]}]
+
+    total_weight = sum(caption_reading_weight(chunk) for chunk in chunks)
+    duration = end - start
+    cursor = start
+    split_entries = []
+    for index, chunk in enumerate(chunks):
+        if index == len(chunks) - 1:
+            chunk_end = end
+        else:
+            chunk_end = cursor + duration * caption_reading_weight(chunk) / total_weight
+        split_entries.append({**entry, "start": round(cursor, 3), "end": round(chunk_end, 3), "text": chunk})
+        cursor = chunk_end
+    # Round-off must never create a gap in an SRT whose timestamps are ms based.
+    for previous, current_entry in zip(split_entries, split_entries[1:]):
+        current_entry["start"] = previous["end"]
+    split_entries[-1]["end"] = round(end, 3)
+    return split_entries
+
+
 def caption_template(args: argparse.Namespace) -> int:
     manifest = read_json(args.manifest.resolve())
     sources = [source for source in manifest.get("sources", []) if source.get("decision", {}).get("requires_rough_cut")]
@@ -414,7 +471,7 @@ def caption_template(args: argparse.Namespace) -> int:
     write_json(output, {
         "version": 1,
         "timestamp_basis": "rendered_rough_cut_output",
-        "instructions": "Replace text with reviewed simplified Chinese from the rough-cut video and approved copy. Preserve source_id and rough_cut_start/end; split entries only when every replacement retains these actual rough-cut times.",
+        "instructions": "Replace text with reviewed simplified Chinese from the rough-cut video and approved copy. Preserve source_id and rough_cut_start/end. Do not manually split at commas: final SRT generation will split reviewed long entries at commas and sentence punctuation while preserving this time range.",
         "captions": captions,
     })
     emit("succeeded", "caption-template", output=str(output), captions=len(captions))
@@ -540,19 +597,20 @@ def captions(args: argparse.Namespace) -> int:
         for item in transcript:
             speech_ranges.append({"start": cursor + item["start"], "end": cursor + item["end"]})
         for item in review_entries:
-            start = cursor + item["start"]
-            end = cursor + item["end"]
-            entries.append({
-                "source_id": source["id"],
-                "source_video": source["video"],
-                "source_start": round(item["start"], 3),
-                "source_end": round(item["end"], 3),
-                "timeline_start": round(start, 3),
-                "timeline_end": round(max(end, start + 0.08), 3),
-                "role": source["decision"]["role"],
-                "audio_policy": source["decision"]["audio_policy"],
-                "text": item["text"],
-            })
+            for split_item in split_caption_entry(item, args.max_chars):
+                start = cursor + split_item["start"]
+                end = cursor + split_item["end"]
+                entries.append({
+                    "source_id": source["id"],
+                    "source_video": source["video"],
+                    "source_start": round(split_item["start"], 3),
+                    "source_end": round(split_item["end"], 3),
+                    "timeline_start": round(start, 3),
+                    "timeline_end": round(max(end, start + 0.08), 3),
+                    "role": source["decision"]["role"],
+                    "audio_policy": source["decision"]["audio_policy"],
+                    "text": split_item["text"],
+                })
         cursor += duration
     if not entries:
         raise ValueError("No reviewed caption entries survived the rough-cut timeline")
@@ -648,6 +706,7 @@ def parser() -> argparse.ArgumentParser:
     captions_parser.add_argument("--output-dir", type=Path, required=True)
     captions_parser.add_argument("--caption-review", type=Path, required=True, help="Reviewed simplified-Chinese captions with rough-cut timestamps")
     captions_parser.add_argument("--reference-script", type=Path, help="Approved copy used to reject unacknowledged subtitle truncation")
+    captions_parser.add_argument("--max-chars", type=int, default=CAPTION_MAX_CHARS, help="Maximum non-punctuation characters per final SRT entry; commas always split")
     captions_parser.set_defaults(handler=captions)
     caption_qc_parser = commands.add_parser("caption-qc", help="Verify SRT, speech timeline, and optional approved copy before draft creation")
     caption_qc_parser.add_argument("--srt", type=Path, required=True)

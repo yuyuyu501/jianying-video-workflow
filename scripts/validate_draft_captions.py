@@ -47,8 +47,26 @@ def material_text(material: dict) -> str:
     return str(value.get("text", "")).strip() if isinstance(value, dict) else ""
 
 
-def validate(document: dict, srt_entries: list[dict], track_name: str) -> dict:
-    text_by_id = {item.get("id"): material_text(item) for item in document.get("materials", {}).get("texts", [])}
+def material_style(material: dict, segment: dict) -> tuple[str, str]:
+    content = material.get("content", "")
+    if isinstance(content, str):
+        try:
+            content = json.loads(content)
+        except json.JSONDecodeError:
+            content = {}
+    styles = content.get("styles", []) if isinstance(content, dict) else []
+    flower = any(isinstance(style, dict) and style.get("effectStyle") for style in styles)
+    bubble = bool(material.get("background_style"))
+    kind = "flower" if flower else "bubble" if bubble else "base"
+    transform_y = float(segment.get("clip", {}).get("transform", {}).get("y", -0.72))
+    position = "middle" if transform_y > -0.4 else "bottom"
+    return kind, position
+
+
+def validate(document: dict, srt_entries: list[dict], track_name: str, require_style_variation: bool = False) -> dict:
+    materials = document.get("materials", {}).get("texts", [])
+    text_by_id = {item.get("id"): material_text(item) for item in materials}
+    material_by_id = {item.get("id"): item for item in materials}
     track = next((item for item in document.get("tracks", []) if item.get("type") == "text" and item.get("name") == track_name), None)
     errors = []
     if track is None:
@@ -64,7 +82,25 @@ def validate(document: dict, srt_entries: list[dict], track_name: str) -> dict:
             errors.append(f"subtitle time differs at entry {index}")
         if text_by_id.get(segment.get("material_id"), "") != entry["text"]:
             errors.append(f"subtitle text differs at entry {index}")
-    return {"status": "passed" if not errors else "failed", "subtitle_count": len(segments), "errors": errors}
+    presentation = [material_style(material_by_id.get(segment.get("material_id"), {}), segment) for segment in segments]
+    style_types = sorted({kind for kind, _ in presentation})
+    positions = sorted({position for _, position in presentation})
+    if require_style_variation and len(segments) >= 2:
+        if len(style_types) < 2:
+            errors.append("subtitle presentation has fewer than two style types")
+        if len(positions) < 2:
+            errors.append("subtitle presentation has fewer than two positions")
+    for index in range(1, len(presentation) - 2):
+        if presentation[index][0] in {"bubble", "flower"} and presentation[index - 1][0] == presentation[index][0] == presentation[index + 1][0]:
+            errors.append(f"subtitle presentation repeats {presentation[index][0]!r} three times in a row")
+            break
+    return {
+        "status": "passed" if not errors else "failed",
+        "subtitle_count": len(segments),
+        "style_types": style_types,
+        "positions": positions,
+        "errors": errors,
+    }
 
 
 def main() -> int:
@@ -74,11 +110,12 @@ def main() -> int:
     source.add_argument("--draft-name")
     parser.add_argument("--srt", type=Path, required=True)
     parser.add_argument("--track-name", default="Subtitles")
+    parser.add_argument("--require-style-variation", action="store_true")
     args = parser.parse_args()
     try:
         draft_path = args.draft_path.resolve() if args.draft_path else (default_draft_root() / args.draft_name).resolve()
         document = json.loads((draft_path / "draft_info.json").read_text(encoding="utf-8"))
-        result = validate(document, read_srt(args.srt.resolve()), args.track_name)
+        result = validate(document, read_srt(args.srt.resolve()), args.track_name, args.require_style_variation)
         result["draft_path"] = str(draft_path)
         result["srt"] = str(args.srt.resolve())
     except (OSError, ValueError, json.JSONDecodeError) as error:

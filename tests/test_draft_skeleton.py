@@ -27,6 +27,7 @@ class DraftSkeletonTests(unittest.TestCase):
         return {"tracks": [
             track("video", "MainVisual"),
             track("video", "B_Roll", muted=True),
+            track("video", "SpeakerPiP"),
             track("audio", "Narration"),
             track("audio", "SFX"),
             track("effect", "Effects"),
@@ -47,8 +48,8 @@ class DraftSkeletonTests(unittest.TestCase):
 
     def test_rejects_wrong_type_or_materialized_track(self):
         document = self.valid_document()
-        document["tracks"][5]["type"] = "video"
-        document["tracks"][6]["segments"] = [{"material_id": "caption"}]
+        document["tracks"][6]["type"] = "video"
+        document["tracks"][7]["segments"] = [{"material_id": "caption"}]
         report = skeleton.validate(document)
         self.assertEqual(report["status"], "failed")
         self.assertTrue(any("CharacterEffects" in error for error in report["errors"]))

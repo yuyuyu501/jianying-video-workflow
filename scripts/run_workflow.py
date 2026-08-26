@@ -71,6 +71,9 @@ def main() -> int:
     parser.add_argument("--srt", type=Path, help="Externally reviewed global SRT; requires --speech-timeline and is always caption-QC checked")
     parser.add_argument("--speech-timeline", type=Path, help="Required companion JSON for --srt")
     parser.add_argument("--beats", type=Path)
+    parser.add_argument("--broll-plan", type=Path, help="Approved B-roll JSON; segments may request circular speaker_pip")
+    parser.add_argument("--approved-asset-plan", type=Path, help="AI-approved selected asset plan used only with --materialize-draft")
+    parser.add_argument("--materialize-draft", action="store_true", help="Write the approved single-speaker plan into the new validated JianYing draft")
     parser.add_argument("--draft-name", help="New JianYing draft name; required with --beats to create the validated track skeleton")
     parser.add_argument("--draft-width", type=int, default=1080)
     parser.add_argument("--draft-height", type=int, default=1920)
@@ -81,6 +84,7 @@ def main() -> int:
     parser.add_argument("--semantic-exclusions", type=Path, help="Reviewed cuts; use a per-source mapping when multiple narration sources exist")
     parser.add_argument("--reference-script", type=Path, help="Approved script/copy used to audit off-topic and repeated speech")
     parser.add_argument("--caption-review", type=Path, help="Reviewed simplified-Chinese captions timed against rough-cut output; required to create generated captions")
+    parser.add_argument("--caption-max-chars", type=int, default=18, help="Maximum non-punctuation characters per final subtitle chunk; commas always form a break")
     parser.add_argument("--allow-no-reference-script", action="store_true", help="Explicitly allow caption QC without script-completeness checks")
     parser.add_argument("--render-rough-cut", action="store_true", help="Render every approved narration rough cut and then generate global captions")
     parser.add_argument("--skip-captions", action="store_true", help="Do not generate captions after rendering rough cuts")
@@ -97,10 +101,14 @@ def main() -> int:
         raise ValueError("--srt and --speech-timeline must be supplied together")
     if bool(args.beats) != bool(args.draft_name):
         raise ValueError("--beats and --draft-name must be supplied together so analysis starts from a validated draft skeleton")
+    if args.materialize_draft and (not args.beats or not args.broll_plan or not args.approved_asset_plan):
+        raise ValueError("--materialize-draft requires --beats, --broll-plan, and --approved-asset-plan")
+    if args.materialize_draft and not args.render_rough_cut:
+        raise ValueError("--materialize-draft requires --render-rough-cut so it can import validated silent visual and narration artifacts")
     jianying_python = args.jianying_python or Path(os.environ.get("JY_PYTHON", "").strip() or sys.executable)
     if not jianying_python.is_file():
         raise FileNotFoundError(f"JianYing Python executable not found: {jianying_python}")
-    for path in (args.srt, args.speech_timeline, args.caption_review):
+    for path in (args.srt, args.speech_timeline, args.caption_review, args.broll_plan, args.approved_asset_plan):
         if path and not path.is_file():
             raise FileNotFoundError(path)
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -276,7 +284,7 @@ def main() -> int:
             sys.executable, str(skills["media-role-director"] / "scripts" / "media_role_director.py"), "captions",
             "--manifest", str(manifest_path), "--output-dir", str(captions_dir),
         ]
-        captions_command.extend(["--caption-review", str(args.caption_review.resolve())])
+        captions_command.extend(["--caption-review", str(args.caption_review.resolve()), "--max-chars", str(args.caption_max_chars)])
         if args.reference_script:
             captions_command.extend(["--reference-script", str(args.reference_script.resolve())])
         run(captions_command)
@@ -314,6 +322,31 @@ def main() -> int:
             "--beats", str(args.beats), "--catalog", str(catalog_json), "--style", args.style, "--output", str(asset_plan),
         ])
 
+    draft_assembly = None
+    draft_assembly_qc = None
+    if args.materialize_draft:
+        if len(speech_sources) != 1:
+            raise RuntimeError("--materialize-draft currently requires exactly one narration source so SpeakerPiP can use its verified silent visual")
+        if generated_srt is None or speech_timeline is None or skeleton_draft is None:
+            raise RuntimeError("draft materialization requires generated captions and a validated skeleton")
+        source_id = str(speech_sources[0]["id"])
+        draft_assembly_qc = args.output_dir / "draft_assembly.qc.json"
+        command = [
+            str(jianying_python.resolve()), str(Path(__file__).resolve().with_name("assemble_draft.py")),
+            "--draft-name", args.draft_name,
+            "--visual", str(visuals[source_id]), "--narration", str(narrations[source_id]),
+            "--captions", str(generated_srt), "--broll-plan", str(args.broll_plan.resolve()),
+            "--asset-plan", str(args.approved_asset_plan.resolve()), "--output", str(draft_assembly_qc),
+            "--rebuild-empty-skeleton",
+        ]
+        if args.drafts_root:
+            command.extend(["--drafts-root", str(args.drafts_root.resolve())])
+        run(command)
+        assembly_report = read_json(draft_assembly_qc)
+        if not isinstance(assembly_report, dict) or assembly_report.get("status") != "succeeded":
+            raise RuntimeError("draft assembly QC did not pass")
+        draft_assembly = assembly_report.get("draft_path")
+
     result = {
         "status": "succeeded",
         "sources": [str(video) for video in videos],
@@ -341,7 +374,9 @@ def main() -> int:
         "draft_skeleton_qc": str(skeleton_qc) if skeleton_qc else None,
         "asset_catalog": str(catalog_json),
         "asset_plan": str(asset_plan) if asset_plan else None,
-        "next_step": "Use the validated draft skeleton's named tracks for scene effects, character effects, subtitle styling, and muted B-roll assembly; validate after each write stage.",
+        "draft_assembly": draft_assembly,
+        "draft_assembly_qc": str(draft_assembly_qc) if draft_assembly_qc else None,
+        "next_step": "Review candidate plans, then rerun with --materialize-draft, --approved-asset-plan, and --broll-plan to write a validated editable draft; otherwise the empty skeleton remains unchanged.",
     }
     print("RESULT: " + json.dumps(result, ensure_ascii=False))
     return 0

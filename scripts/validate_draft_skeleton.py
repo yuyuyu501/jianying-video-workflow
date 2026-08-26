@@ -12,6 +12,7 @@ from pathlib import Path
 REQUIRED_TRACKS = {
     "MainVisual": "video",
     "B_Roll": "video",
+    "SpeakerPiP": "video",
     "Narration": "audio",
     "SFX": "audio",
     "Effects": "effect",

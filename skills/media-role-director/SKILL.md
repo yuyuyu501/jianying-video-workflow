@@ -35,7 +35,11 @@ clip is not the primary talking head.
    must pass before effects or draft creation; it rejects any uncovered opening,
    middle, or ending speech detected on the rough-cut output. When an approved
    script exists, pass `--reference-script` so unacknowledged sentence-tail
-   truncation also blocks the workflow.
+   truncation also blocks the workflow. Reviewed entries do not need manual
+   visual line breaks: final SRT generation splits at commas, pauses, and
+   sentence punctuation, then continuously divides the existing rough-cut
+   range by reading length. The default maximum is 18 non-punctuation
+   characters and can be changed with `--max-chars`.
 
 ## Roles And Audio Policies
 

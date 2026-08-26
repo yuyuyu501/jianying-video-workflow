@@ -40,7 +40,7 @@ draft skeleton before asset selection so every later write has a fixed target.
    `visual_subject`, `action`, `emotion`, `purpose`, `caption_zone`, and
    `pip_zone`. Include beats that intentionally receive no effect.
 4. **Draft skeleton**: create a new draft-library project with the workflow's
-   `MainVisual`, muted `B_Roll`, `Narration`, `SFX`, `Effects`,
+   `MainVisual`, muted `B_Roll`, `SpeakerPiP`, `Narration`, `SFX`, `Effects`,
    `CharacterEffects`, and `Subtitles` tracks, then run
    `scripts/validate_draft_skeleton.py`. This stage changes only track
    structure. It must not add clips, subtitles, effects, or source audio, and
@@ -76,7 +76,10 @@ draft skeleton before asset selection so every later write has a fixed target.
    continue; otherwise wait for confirmation.
 11. **Build**: call `jianying-editor` in draft-library-only mode to add the
    approved main visual, narration, subtitles, styles, B-roll, effects, and
-   SFX to the validated skeleton. Do not create another draft, launch JianYing, automate its UI, invoke
+   SFX to the validated skeleton. When B-roll still needs an identifiable
+   speaker, declare `speaker_pip.enabled` for that beat and place a circular,
+   muted crop of the approved silent rough-cut visual on `SpeakerPiP`; its
+   source start must equal final-timeline start. Do not create another draft, launch JianYing, automate its UI, invoke
    `JianyingController`, or call an exporter. Use separate tracks for effects
    and each audio role. Sound effects use the skeleton's `SFX` track; do not
    silently create a new named audio track. Keep source asset IDs, local cache paths, and the
@@ -121,6 +124,11 @@ draft skeleton before asset selection so every later write has a fixed target.
 - Do not choose a candidate merely because it is ranked first. The model must
   consider the actual frame, spoken meaning, subtitle/PiP zones, and the
   recent selection history. The `select` command is the enforcement point.
+- Caption presentation is a deterministic build rule rather than an AI effect
+  selection: use basic lower captions for most speech, middle warning captions
+  for urgent language, rounded backgrounds as a reliable bubble treatment, and
+  locally verified flower text sparingly. Do not repeat an emphasis variant
+  three times in a row.
 
 ## Knowledge Representation
 

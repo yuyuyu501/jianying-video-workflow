@@ -91,6 +91,20 @@ class CaptionQcTests(unittest.TestCase):
             self.assertEqual(report["status"], "succeeded")
             self.assertEqual(report["rough_cut_coverage"]["status"], "passed")
 
+    def test_caption_split_breaks_at_commas_with_continuous_timestamps(self):
+        entries = media_role.split_caption_entry({"start": 10.0, "end": 14.0, "text": "第一步，立刻坐下，保持半卧位。"})
+        self.assertEqual([entry["text"] for entry in entries], ["第一步，", "立刻坐下，", "保持半卧位。"])
+        self.assertEqual(entries[0]["start"], 10.0)
+        self.assertEqual(entries[-1]["end"], 14.0)
+        self.assertTrue(all(left["end"] == right["start"] for left, right in zip(entries, entries[1:])))
+
+    def test_caption_split_hard_wraps_long_unpunctuated_text(self):
+        text = "这是一个没有标点但是需要被拆分成短字幕的长句子为了便于阅读"
+        entries = media_role.split_caption_entry({"start": 0.0, "end": 6.0, "text": text}, max_chars=10)
+        self.assertGreater(len(entries), 1)
+        self.assertTrue(all(media_role.caption_reading_weight(entry["text"]) <= 10 for entry in entries))
+        self.assertEqual("".join(entry["text"] for entry in entries), text)
+
     def test_draft_caption_validation_rejects_text_mismatch(self):
         document = {
             "materials": {"texts": [{"id": "caption", "content": json.dumps({"text": "错误字幕"}, ensure_ascii=False)}]},
@@ -111,6 +125,21 @@ class CaptionQcTests(unittest.TestCase):
         }
         report = draft_captions.validate(document, [{"start": 0.0, "end": 2.0, "text": "正确字幕"}], "Subtitles")
         self.assertEqual(report["status"], "passed")
+
+    def test_draft_caption_validation_requires_real_style_variation(self):
+        document = {
+            "materials": {"texts": [
+                {"id": "one", "content": json.dumps({"text": "普通字幕", "styles": [{}]}, ensure_ascii=False)},
+                {"id": "two", "content": json.dumps({"text": "气泡字幕", "styles": [{}]}, ensure_ascii=False), "background_style": 1},
+            ]},
+            "tracks": [{"type": "text", "name": "Subtitles", "segments": [
+                {"material_id": "one", "target_timerange": {"start": 0, "duration": 1_000_000}, "clip": {"transform": {"y": -0.72}}},
+                {"material_id": "two", "target_timerange": {"start": 1_000_000, "duration": 1_000_000}, "clip": {"transform": {"y": -0.08}}},
+            ]}],
+        }
+        entries = [{"start": 0.0, "end": 1.0, "text": "普通字幕"}, {"start": 1.0, "end": 2.0, "text": "气泡字幕"}]
+        report = draft_captions.validate(document, entries, "Subtitles", require_style_variation=True)
+        self.assertEqual(report["status"], "passed", report["errors"])
 
 
 if __name__ == "__main__":

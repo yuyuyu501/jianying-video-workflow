@@ -20,12 +20,12 @@ video-understand (external)
 -> global captions.srt + speech_timeline.json
 -> caption QC: rough-cut speech coverage, source mapping, text completeness, and reference-script coverage
 -> video-understand (final-timeline representative frames)
--> new JianYing draft skeleton + named-track QC
+-> new JianYing draft skeleton + named-track QC, including SpeakerPiP
 -> jianying-asset-director (bundled)
 -> scene-effect/SFX shortlist and AI selection
 -> character-effect shortlist and AI selection
 -> jianying-editor (external)
--> materialize the approved plan on the existing named tracks
+-> materialize silent visual, narration, B-roll/PiP, captions, and effects on the named tracks
 -> per-stage and post-build composition QC
 ```
 
@@ -135,7 +135,7 @@ Then inspect the rough-cut previews, global SRT, and source mapping. Prepare
 timestamped visual beats on that final timeline and pass them with `--beats`
 and a new `--draft-name`. The workflow first creates a draft skeleton and
 stops unless its empty, named tracks pass QC: `MainVisual`, muted `B_Roll`,
-`Narration`, `SFX`, `Effects`, `CharacterEffects`, and `Subtitles`. It refuses
+`SpeakerPiP`, `Narration`, `SFX`, `Effects`, `CharacterEffects`, and `Subtitles`. It refuses
 to reuse a draft name unless `--overwrite` is explicitly passed to the skeleton
 script. This separates track structure from creative edits.
 
@@ -151,6 +151,12 @@ for beats with a visible face and no full-height B-roll. The AI must select a
 shortlist ID or explicitly choose no effect; code validates the real resource
 ID, repetition limits, cooldown, effect type, and eligibility before it can be
 materialized on the existing draft tracks.
+
+Final SRT entries are generated only from the rendered rough-cut timebase. The
+caption review keeps natural transcript ranges; the caption stage then splits
+long reviewed text at commas, pauses, and sentence punctuation (default 18
+non-punctuation characters) and apportions each existing time range without
+gaps. This keeps readable short captions without remapping raw-camera time.
 
 When the speaker is following a supplied script, pass that script to the rough
 cut stage and review the generated script-alignment report. The rough cut must
@@ -179,13 +185,14 @@ Before handing off the draft, verify:
   timestamps; detected opening, middle, and final rough-cut speech all have
   subtitle coverage; there is no unaccounted long subtitle gap; a
   reference-script sentence is not silently truncated;
-- `draft_skeleton.qc.json` passed before any effect, subtitle, or B-roll
+- `draft_skeleton.qc.json` passed before any effect, subtitle, B-roll, or PiP
   segment is written; all required tracks exist once with the correct type and
   `B_Roll` begins muted;
 - the approved rough-cut review has video, audio, compatible codecs, and no black frames;
 - the JianYing draft imports the silent visual on `MainVisual` and the
   validated narration on `Narration`; visual-only B-roll remains explicitly
-  muted on `B_Roll`;
+  muted on `B_Roll`; each `SpeakerPiP` segment uses the approved silent visual,
+  final-timeline source time, zero segment volume, and a circular mask;
 - JianYing effects and sound effects use validated local-library IDs;
 - every AI selection is constrained to its generated shortlist or an explicit
   no-effect decision, and the plan passes configured repetition limits;
@@ -194,7 +201,8 @@ Before handing off the draft, verify:
   contains only `face_effect` materials;
 - character-effect segments use `face_target` and never overlap a full-height
   B-roll beat;
-- captions, PiP, titles, and effects do not collide.
+- captions, PiP, titles, and effects do not collide; captions exactly match
+  the SRT and have multiple safe presentation variants when practical.
 
 Do not use `JyProject.add_effect_simple` to create a JianYing effect track: it
 can leave timeline placeholders without a `video_effect` material. Resolve the
@@ -225,6 +233,39 @@ Then verify that the `Subtitles` track exactly reproduces the approved SRT:
 
 ```powershell
 python scripts/validate_draft_captions.py --draft-name "DraftName" --srt "work\captions\captions.srt"
+```
+
+Use `scripts/assemble_draft.py` only after the empty skeleton, caption QC, and
+AI effect selection are approved. It refuses a populated draft, rebuilds the
+verified empty skeleton in one editable session, and writes silent visual,
+narration, B-roll, optional circular speaker PiP, caption presentation, and
+approved effects. A B-roll plan can request PiP per segment:
+
+```json
+{"segments": [{"video": "C:\\media\\demonstration.mp4", "start": 10.84, "duration": 3.0, "source_start": 0.0, "speaker_pip": {"enabled": true, "position": "upper_right", "scale": 0.34, "face_center_y": -0.22}}]}
+```
+
+```powershell
+python scripts/assemble_draft.py --draft-name "DraftName" `
+  --visual "work\rough-cuts\source.visual.mp4" `
+  --narration "work\rough-cuts\source.narration.m4a" `
+  --captions "work\captions\captions.srt" `
+  --broll-plan "work\broll_plan.json" `
+  --asset-plan "work\selected_plan.json" `
+  --output "work\draft_assembly.qc.json" `
+  --rebuild-empty-skeleton
+```
+
+It rotates basic lower captions, middle warning captions, rounded-background
+"bubble" captions, and sparse locally cached flower text. It uses only flower
+IDs found in `artistEffect`; unavailable flower resources fall back to the
+basic presentation. The main runner exposes the same step only with explicit
+`--materialize-draft --broll-plan ... --approved-asset-plan ...`; it currently
+requires one narration source so the PiP can reference that source's validated
+silent visual. Verify PiP explicitly:
+
+```powershell
+python scripts/validate_draft_pip.py --draft-name "DraftName" --require-pip
 ```
 
 Report the draft name and absolute draft-library path. A rough-cut preview is

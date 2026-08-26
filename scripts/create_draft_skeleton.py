@@ -77,6 +77,7 @@ def main() -> int:
         )
         project.script.add_track(draft.TrackType.video, "MainVisual")
         project.script.add_track(draft.TrackType.video, "B_Roll", mute=True, relative_index=1)
+        project.script.add_track(draft.TrackType.video, "SpeakerPiP", relative_index=2)
         project.script.add_track(draft.TrackType.audio, "Narration")
         project.script.add_track(draft.TrackType.audio, "SFX")
         project.script.add_track(draft.TrackType.effect, "Effects")
