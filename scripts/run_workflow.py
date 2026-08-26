@@ -74,6 +74,8 @@ def main() -> int:
     parser.add_argument("--broll-plan", type=Path, help="Approved B-roll JSON; segments may request circular speaker_pip")
     parser.add_argument("--speaker-pip-mode", choices=("auto", "off", "require"), default="auto", help="Optional speaker PiP stage: auto skips unsafe/unavailable PiP, off disables it, require fails if requested PiP cannot pass review")
     parser.add_argument("--speaker-pip-visual-decisions", type=Path, help="Optional approved model/human decisions for generated SpeakerPiP candidate previews; required by --speaker-pip-mode require")
+    parser.add_argument("--exported-video", type=Path, help="Optional MP4 manually exported from JianYing for post-export pixel QC")
+    parser.add_argument("--export-audit-output", type=Path, help="Optional post-export QC JSON path; defaults to output-dir/export_visual_qc.json")
     parser.add_argument("--prepare-speaker-pip", action="store_true", help="Run only the optional SpeakerPiP analysis/review stage after creating the draft skeleton; it writes review artifacts but does not modify the draft")
     parser.add_argument("--approved-asset-plan", type=Path, help="AI-approved selected asset plan used only with --materialize-draft")
     parser.add_argument("--materialize-draft", action="store_true", help="Write the approved single-speaker plan into the new validated JianYing draft")
@@ -116,6 +118,8 @@ def main() -> int:
     for path in (args.srt, args.speech_timeline, args.caption_review, args.broll_plan, args.approved_asset_plan, args.speaker_pip_visual_decisions):
         if path and not path.is_file():
             raise FileNotFoundError(path)
+    if args.exported_video and not args.exported_video.is_file():
+        raise FileNotFoundError(args.exported_video)
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
     skills = {name: locate_skill(name) for name in ["video-understand", "media-role-director", "talking-head-rough-cut", "jianying-asset-director", "jianying-editor"]}
@@ -383,6 +387,24 @@ def main() -> int:
             raise RuntimeError("draft assembly QC did not pass")
         draft_assembly = assembly_report.get("draft_path")
 
+    export_audit = None
+    if args.exported_video:
+        audit_captions = generated_srt or (args.srt.resolve() if args.srt else None)
+        audit_broll = resolved_broll_plan or (args.broll_plan.resolve() if args.broll_plan else None)
+        if audit_captions is None:
+            raise RuntimeError("--exported-video requires generated or supplied captions for post-export QC")
+        export_audit = args.export_audit_output or (args.output_dir / "export_visual_qc.json")
+        audit_command = [
+            sys.executable, str(Path(__file__).resolve().with_name("verify_export.py")),
+            "--video", str(args.exported_video.resolve()), "--captions", str(audit_captions), "--output", str(export_audit),
+        ]
+        if audit_broll:
+            audit_command.extend(["--broll-plan", str(audit_broll)])
+        run(audit_command)
+        export_report = read_json(export_audit)
+        if export_report.get("status") != "succeeded":
+            raise RuntimeError("post-export pixel QC did not pass; inspect export_visual_qc.json")
+
     result = {
         "status": "succeeded",
         "sources": [str(video) for video in videos],
@@ -417,6 +439,8 @@ def main() -> int:
         "caption_layout_review": str(caption_layout_review) if caption_layout_review else None,
         "speaker_pip_mode": args.speaker_pip_mode,
         "speaker_pip_visual_decisions": str(args.speaker_pip_visual_decisions.resolve()) if args.speaker_pip_visual_decisions else None,
+        "exported_video": str(args.exported_video.resolve()) if args.exported_video else None,
+        "export_audit": str(export_audit) if export_audit else None,
         "next_step": "Review asset selections and any SpeakerPiP candidate composites, then rerun with --materialize-draft and --approved-asset-plan to write a validated editable draft; otherwise the empty skeleton remains unchanged.",
     }
     print("RESULT: " + json.dumps(result, ensure_ascii=False))

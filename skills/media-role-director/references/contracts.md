@@ -65,6 +65,11 @@ rejects a short subtitle tail that is skipped before the next subtitle begins.
 Longer script differences remain explicit editorial-review findings because
 they may be approved paraphrases or semantic removals.
 
+The caption stage merges contiguous runs of one-to-three-character reviewed
+fragments before final display splitting. Final QC rejects every single-
+character subtitle cue. A review template must describe complete spoken
+phrases, never transcription shards such as `可 / 以早 / 点 / 缓`.
+
 The mapping expects cuts to occur between spoken phrases. If a proposed cut
 splits a Whisper segment, review the result before using it for final captions.
 

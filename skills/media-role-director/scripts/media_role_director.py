@@ -397,6 +397,7 @@ def coverage_report(entries: list[dict[str, Any]], speech_ranges: list[dict[str,
 
 CAPTION_BREAK_PUNCTUATION = frozenset("\uFF0C,\u3001\uFF1B;\u3002\uFF01\uFF1F!?\uFF1A:")
 CAPTION_MAX_CHARS = 18
+CAPTION_MICRO_FRAGMENT_CHARS = 4
 
 
 def caption_reading_weight(text: str) -> int:
@@ -407,6 +408,37 @@ def caption_reading_weight(text: str) -> int:
 def display_caption_text(text: str) -> str:
     """Keep spoken words while removing punctuation used only as visual breaks."""
     return "".join(character for character in text if character not in CAPTION_BREAK_PUNCTUATION).strip()
+
+
+def merge_micro_caption_fragments(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Join consecutive short review fragments before the final SRT is split."""
+    merged: list[dict[str, Any]] = []
+    pending: list[dict[str, Any]] = []
+
+    def flush() -> None:
+        nonlocal pending
+        if not pending:
+            return
+        if len(pending) == 1:
+            merged.append(pending[0])
+        else:
+            first, last = pending[0], pending[-1]
+            merged.append({**first, "start": first["start"], "end": last["end"], "text": "".join(item["text"] for item in pending)})
+        pending = []
+
+    for entry in entries:
+        micro = caption_reading_weight(entry["text"]) < CAPTION_MICRO_FRAGMENT_CHARS
+        contiguous = not pending or float(entry["start"]) <= float(pending[-1]["end"]) + 0.20
+        if micro and contiguous:
+            pending.append(entry)
+            continue
+        flush()
+        if micro:
+            pending.append(entry)
+        else:
+            merged.append(entry)
+    flush()
+    return merged
 
 
 def split_caption_entry(entry: dict[str, Any], max_chars: int = CAPTION_MAX_CHARS) -> list[dict[str, Any]]:
@@ -440,6 +472,11 @@ def split_caption_entry(entry: dict[str, Any], max_chars: int = CAPTION_MAX_CHAR
     if display_caption_text(current):
         chunks.append(display_caption_text(current))
     chunks = [chunk for chunk in chunks if chunk]
+    # A hard character-limit split may leave a lone final character. Keep the
+    # cue readable by moving that tail back to the preceding subtitle.
+    if len(chunks) >= 2 and caption_reading_weight(chunks[-1]) == 1:
+        tail = chunks.pop()
+        chunks[-1] += tail
     if len(chunks) == 1:
         return [{**entry, "start": round(start, 3), "end": round(end, 3), "text": chunks[0]}]
 
@@ -511,7 +548,7 @@ def reviewed_captions(path: Path, sources: list[dict[str, Any]]) -> dict[str, li
         for previous, current in zip(entries, entries[1:]):
             if current["start"] < previous["end"] - 0.001:
                 raise ValueError(f"caption review overlaps on {source['id']}")
-        grouped[source["id"]] = entries
+        grouped[source["id"]] = merge_micro_caption_fragments(entries)
     return grouped
 
 
@@ -564,6 +601,9 @@ def caption_qc(
         errors.append("final caption ends after speech timeline duration")
     if srt_entries and duration and duration - srt_entries[-1]["end"] > max_gap:
         errors.append(f"final caption ends {duration - srt_entries[-1]['end']:.3f}s before speech timeline")
+    single_character = [index for index, entry in enumerate(srt_entries, start=1) if caption_reading_weight(entry["text"]) == 1]
+    if single_character:
+        errors.append("single-character final captions: " + ", ".join(map(str, single_character)))
     return {
         "status": "succeeded" if not errors else "failed",
         "srt": str(srt_path),

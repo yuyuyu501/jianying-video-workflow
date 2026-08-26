@@ -105,9 +105,36 @@ class CaptionQcTests(unittest.TestCase):
         self.assertTrue(all(media_role.caption_reading_weight(entry["text"]) <= 10 for entry in entries))
         self.assertEqual("".join(entry["text"] for entry in entries), text)
 
+    def test_caption_split_absorbs_a_single_character_tail(self):
+        text = "这是一个刚好会留下单字尾巴的字幕片段"
+        entries = media_role.split_caption_entry({"start": 0.0, "end": 4.0, "text": text}, max_chars=8)
+        self.assertTrue(all(media_role.caption_reading_weight(entry["text"]) != 1 for entry in entries))
+        self.assertEqual("".join(entry["text"] for entry in entries), text)
+
     def test_caption_split_removes_all_display_punctuation(self):
         entries = media_role.split_caption_entry({"start": 0.0, "end": 3.0, "text": "赶紧坐下，立刻拨打120！"})
         self.assertEqual([entry["text"] for entry in entries], ["赶紧坐下", "立刻拨打120"])
+
+    def test_caption_review_merges_a_contiguous_micro_fragment_run(self):
+        merged = media_role.merge_micro_caption_fragments([
+            {"start": 0.0, "end": 0.5, "text": "可"},
+            {"start": 0.5, "end": 1.0, "text": "以早"},
+            {"start": 1.0, "end": 1.5, "text": "点"},
+            {"start": 1.5, "end": 2.0, "text": "缓"},
+            {"start": 2.0, "end": 2.5, "text": "解疼"},
+            {"start": 2.5, "end": 3.0, "text": "痛。"},
+        ])
+        self.assertEqual([item["text"] for item in merged], ["可以早点缓解疼痛。"])
+        self.assertEqual(merged[0]["start"], 0.0)
+        self.assertEqual(merged[0]["end"], 3.0)
+
+    def test_caption_qc_rejects_single_character_cue(self):
+        with tempfile.TemporaryDirectory() as directory:
+            srt = self.write(directory, "captions.srt", "1\n00:00:00,000 --> 00:00:02,000\n缓\n")
+            timeline = self.write(directory, "speech_timeline.json", {"duration": 2.0, "timestamp_basis": "rendered_rough_cut_output", "speech_ranges": [{"start": 0.0, "end": 2.0}], "captions": [{"timeline_start": 0.0, "timeline_end": 2.0, "text": "缓"}]})
+            report = media_role.caption_qc(srt, timeline)
+            self.assertEqual(report["status"], "failed")
+            self.assertTrue(any("single-character" in error for error in report["errors"]))
 
     def test_draft_caption_validation_rejects_text_mismatch(self):
         document = {

@@ -272,7 +272,14 @@ def resolve_broll_plan(plan: dict, review: dict) -> dict:
         pip["enabled"] = bool(approved)
         pip.pop("mode", None)
         if approved:
-            pip["position"] = approved["selected_candidate"]["position"]
+            candidate = approved["selected_candidate"]
+            pip["position"] = candidate["position"]
+            for key in ("scale", "face_center_x", "face_center_y", "mask_size", "head_envelope"):
+                if key in approved:
+                    pip[key] = approved[key]
+            for key in ("placement_transform_x", "placement_transform_y"):
+                if key in candidate:
+                    pip[key] = candidate[key]
     return resolved
 
 

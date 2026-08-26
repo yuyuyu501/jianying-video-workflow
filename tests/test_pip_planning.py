@@ -50,6 +50,19 @@ class PipPlanningTests(unittest.TestCase):
         self.assertTrue(resolved["segments"][0]["speaker_pip"]["enabled"])
         self.assertEqual(resolved["segments"][0]["speaker_pip"]["position"], "middle_left")
 
+    def test_resolved_plan_preserves_reviewed_geometry_for_export_qc(self):
+        plan = {"segments": [{"speaker_pip": {"enabled": True}}]}
+        review = {"pip_reviews": [{
+            "segment_index": 1, "status": "approved", "scale": 0.61,
+            "face_center_x": 0.02, "face_center_y": -0.24, "mask_size": 0.31,
+            "head_envelope": {"x": 250, "y": 300, "width": 380, "height": 510},
+            "selected_candidate": {"position": "middle_right", "safe": True, "placement_transform_x": 0.56, "placement_transform_y": 0.08},
+        }]}
+        resolved = pip.resolve_broll_plan(plan, review)
+        result = resolved["segments"][0]["speaker_pip"]
+        self.assertEqual(result["mask_size"], 0.31)
+        self.assertEqual(result["placement_transform_x"], 0.56)
+
     def test_visual_review_can_move_to_a_safe_candidate(self):
         review = {"pip_reviews": [{
             "segment_index": 1,

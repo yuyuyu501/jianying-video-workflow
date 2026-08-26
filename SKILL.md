@@ -28,6 +28,7 @@ video-understand (external)
 -> jianying-editor (external)
 -> materialize silent visual, narration, B-roll, optional PiP, captions, and effects on the named tracks
 -> per-stage and post-build composition QC
+-> optional user-exported MP4 pixel QC (black frames, audio stream, subtitle timing, PiP face/circle render, OCR native-text review)
 ```
 
 ## Repository Layout
@@ -56,6 +57,26 @@ Do not launch JianYing Pro, drive its UI, invoke `JianyingController`, call
 Do not treat a draft as an exported deliverable. The workflow ends with a
 validated draft name and absolute draft path. Opening that draft and exporting
 an MP4 are manual user actions outside this workflow.
+
+After the user exports an MP4 manually, run the post-export gate against the
+same final-timeline artifacts. This is the first check that can evaluate the
+flattened pixels; draft JSON and candidate previews cannot prove JianYing's
+actual mask/transform render.
+
+```powershell
+python scripts/verify_export.py `
+  --video "C:\path\to\jianying-export.mp4" `
+  --captions "work\captions\captions.srt" `
+  --broll-plan "work\broll_plan.resolved.json" `
+  --output "work\export_visual_qc.json"
+```
+
+`run_workflow.py` accepts the same export as `--exported-video` and writes
+`export_visual_qc.json` after the draft stages. A failed exported-frame PiP
+check, subtitle timing check, black-frame check, or missing audio stream fails
+the gate. Native B-roll text is OCR-reviewed when Tesseract and its language
+packs are available; otherwise the report records the check as skipped and
+requires human inspection.
 
 For connection checks, use `jianying-editor`'s draft inspector only. Do not
 run its API validator: it creates a diagnostic draft and can report a false
@@ -220,6 +241,10 @@ Before handing off the draft, verify:
   segment is written; all required tracks exist once with the correct type and
   `B_Roll` begins muted;
 - the approved rough-cut review has video, audio, compatible codecs, and no black frames;
+- when an exported MP4 is supplied, `export_visual_qc.json` passed. This is a
+  separate flattened-pixel gate and inspects actual export frames for PiP head
+  completeness/circle geometry, subtitle timing/readability risks, black
+  frames, audio presence, and B-roll native text;
 - the JianYing draft imports the silent visual on `MainVisual` and the
   validated narration on `Narration`; visual-only B-roll remains explicitly
   muted on `B_Roll`; optional `SpeakerPiP` segments use the approved silent visual,
