@@ -47,3 +47,13 @@ class DraftPipTests(unittest.TestCase):
         self.assertEqual(report["status"], "failed")
         self.assertTrue(any("muted" in error for error in report["errors"]))
         self.assertTrue(any("circular" in error for error in report["errors"]))
+
+    def test_visual_review_requires_face_centered_mask(self):
+        document = self.document()
+        document["materials"]["masks"][0]["config"] = {"centerX": 0.0, "centerY": -0.2, "height": 0.5}
+        review = {"status": "succeeded", "pip_reviews": [{
+            "final_start": 2.0, "face_center_x": 0.0, "face_center_y": -0.2, "mask_size": 0.5,
+        }]}
+        report = pip.validate(document, require_pip=True, pip_visual_review=review, require_visual_review=True)
+        self.assertEqual(report["status"], "failed")
+        self.assertTrue(any("effective circular size" in error for error in report["errors"]))

@@ -324,6 +324,8 @@ def main() -> int:
 
     draft_assembly = None
     draft_assembly_qc = None
+    pip_visual_review = None
+    caption_layout_review = None
     if args.materialize_draft:
         if len(speech_sources) != 1:
             raise RuntimeError("--materialize-draft currently requires exactly one narration source so SpeakerPiP can use its verified silent visual")
@@ -331,11 +333,25 @@ def main() -> int:
             raise RuntimeError("draft materialization requires generated captions and a validated skeleton")
         source_id = str(speech_sources[0]["id"])
         draft_assembly_qc = args.output_dir / "draft_assembly.qc.json"
+        pip_visual_review = args.output_dir / "pip_visual_review.json"
+        caption_layout_review = args.output_dir / "caption_layout_review.json"
+        run([
+            sys.executable, str(Path(__file__).resolve().with_name("analyze_pip_faces.py")),
+            "--visual", str(visuals[source_id]), "--broll-plan", str(args.broll_plan.resolve()),
+            "--output", str(pip_visual_review), "--preview-dir", str(args.output_dir / "pip-face-review"),
+        ])
+        run([
+            sys.executable, str(Path(__file__).resolve().with_name("analyze_caption_layout.py")),
+            "--visual", str(visuals[source_id]), "--captions", str(generated_srt),
+            "--broll-plan", str(args.broll_plan.resolve()), "--output", str(caption_layout_review),
+        ])
         command = [
             str(jianying_python.resolve()), str(Path(__file__).resolve().with_name("assemble_draft.py")),
             "--draft-name", args.draft_name,
             "--visual", str(visuals[source_id]), "--narration", str(narrations[source_id]),
             "--captions", str(generated_srt), "--broll-plan", str(args.broll_plan.resolve()),
+            "--pip-visual-review", str(pip_visual_review),
+            "--caption-layout-review", str(caption_layout_review),
             "--asset-plan", str(args.approved_asset_plan.resolve()), "--output", str(draft_assembly_qc),
             "--rebuild-empty-skeleton",
         ]
@@ -376,6 +392,8 @@ def main() -> int:
         "asset_plan": str(asset_plan) if asset_plan else None,
         "draft_assembly": draft_assembly,
         "draft_assembly_qc": str(draft_assembly_qc) if draft_assembly_qc else None,
+        "pip_visual_review": str(pip_visual_review) if pip_visual_review else None,
+        "caption_layout_review": str(caption_layout_review) if caption_layout_review else None,
         "next_step": "Review candidate plans, then rerun with --materialize-draft, --approved-asset-plan, and --broll-plan to write a validated editable draft; otherwise the empty skeleton remains unchanged.",
     }
     print("RESULT: " + json.dumps(result, ensure_ascii=False))

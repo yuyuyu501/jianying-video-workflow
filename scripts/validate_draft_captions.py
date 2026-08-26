@@ -67,7 +67,14 @@ def material_style(material: dict, segment: dict, effects_by_id: dict[str, dict]
     return kind, position
 
 
-def validate(document: dict, srt_entries: list[dict], track_name: str, require_style_variation: bool = False) -> dict:
+def validate(
+    document: dict,
+    srt_entries: list[dict],
+    track_name: str,
+    require_style_variation: bool = False,
+    caption_layout_review: dict | None = None,
+    require_visual_layout_review: bool = False,
+) -> dict:
     materials = document.get("materials", {}).get("texts", [])
     text_by_id = {item.get("id"): material_text(item) for item in materials}
     material_by_id = {item.get("id"): item for item in materials}
@@ -102,6 +109,19 @@ def validate(document: dict, srt_entries: list[dict], track_name: str, require_s
         if presentation[index][0] in {"bubble", "flower"} and presentation[index - 1][0] == presentation[index][0] == presentation[index + 1][0]:
             errors.append(f"subtitle presentation repeats {presentation[index][0]!r} three times in a row")
             break
+    layouts = (caption_layout_review or {}).get("layouts", [])
+    layout_by_index = {int(item["index"]): item for item in layouts if isinstance(item, dict) and "index" in item}
+    if require_visual_layout_review and (not caption_layout_review or caption_layout_review.get("status") != "succeeded"):
+        errors.append("caption visual layout review is missing or did not pass")
+    if require_visual_layout_review:
+        for index, segment in enumerate(segments):
+            layout = layout_by_index.get(index)
+            if layout is None:
+                errors.append(f"subtitle {index + 1} has no visual layout review")
+                continue
+            actual_y = float(segment.get("clip", {}).get("transform", {}).get("y", -0.72))
+            if abs(actual_y - float(layout["transform_y"])) > 0.02:
+                errors.append(f"subtitle {index + 1} does not match the visual layout review")
     return {
         "status": "passed" if not errors else "failed",
         "subtitle_count": len(segments),
@@ -118,12 +138,15 @@ def main() -> int:
     source.add_argument("--draft-name")
     parser.add_argument("--srt", type=Path, required=True)
     parser.add_argument("--track-name", default="Subtitles")
+    parser.add_argument("--caption-layout-review", type=Path)
     parser.add_argument("--require-style-variation", action="store_true")
+    parser.add_argument("--require-visual-layout-review", action="store_true")
     args = parser.parse_args()
     try:
         draft_path = args.draft_path.resolve() if args.draft_path else (default_draft_root() / args.draft_name).resolve()
         document = json.loads((draft_path / "draft_info.json").read_text(encoding="utf-8"))
-        result = validate(document, read_srt(args.srt.resolve()), args.track_name, args.require_style_variation)
+        layout_review = json.loads(args.caption_layout_review.read_text(encoding="utf-8")) if args.caption_layout_review else None
+        result = validate(document, read_srt(args.srt.resolve()), args.track_name, args.require_style_variation, layout_review, args.require_visual_layout_review)
         result["draft_path"] = str(draft_path)
         result["srt"] = str(args.srt.resolve())
     except (OSError, ValueError, json.JSONDecodeError) as error:

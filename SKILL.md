@@ -193,6 +193,9 @@ Before handing off the draft, verify:
   validated narration on `Narration`; visual-only B-roll remains explicitly
   muted on `B_Roll`; each `SpeakerPiP` segment uses the approved silent visual,
   final-timeline source time, zero segment volume, and a circular mask;
+  `pip_visual_review.json` must detect the speaker face from final-timeline
+  frames and supplies the mask center, crop size, and source scale. Fixed face
+  center or crop constants are not permitted;
 - JianYing effects and sound effects use validated local-library IDs;
 - every AI selection is constrained to its generated shortlist or an explicit
   no-effect decision, and the plan passes configured repetition limits;
@@ -201,8 +204,12 @@ Before handing off the draft, verify:
   contains only `face_effect` materials;
 - character-effect segments use `face_target` and never overlap a full-height
   B-roll beat;
+- `caption_layout_review.json` must inspect representative rough-cut frames for
+  every SRT cue before draft assembly; its safe zone is materialized as the
+  subtitle transform and then compared back against the saved draft;
 - captions, PiP, titles, and effects do not collide; captions exactly match
-  the SRT and have multiple safe presentation variants when practical.
+  the SRT, use high-frequency expressive variants (large outlined text, bubble,
+  and local flower text when available), and have multiple safe positions.
 
 Do not use `JyProject.add_effect_simple` to create a JianYing effect track: it
 can leave timeline placeholders without a `video_effect` material. Resolve the
@@ -242,7 +249,7 @@ narration, B-roll, optional circular speaker PiP, caption presentation, and
 approved effects. A B-roll plan can request PiP per segment:
 
 ```json
-{"segments": [{"video": "C:\\media\\demonstration.mp4", "start": 10.84, "duration": 3.0, "source_start": 0.0, "speaker_pip": {"enabled": true, "position": "upper_right", "scale": 0.34, "face_center_y": -0.22}}]}
+{"segments": [{"video": "C:\\media\\demonstration.mp4", "start": 10.84, "duration": 3.0, "source_start": 0.0, "speaker_pip": {"enabled": true, "position": "upper_right"}}]}
 ```
 
 ```powershell
@@ -251,6 +258,8 @@ python scripts/assemble_draft.py --draft-name "DraftName" `
   --narration "work\rough-cuts\source.narration.m4a" `
   --captions "work\captions\captions.srt" `
   --broll-plan "work\broll_plan.json" `
+  --pip-visual-review "work\pip_visual_review.json" `
+  --caption-layout-review "work\caption_layout_review.json" `
   --asset-plan "work\selected_plan.json" `
   --output "work\draft_assembly.qc.json" `
   --rebuild-empty-skeleton

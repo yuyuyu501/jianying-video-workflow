@@ -25,7 +25,13 @@ def overlaps(first: dict, second: dict) -> bool:
     return first_start < second_end and second_start < first_end
 
 
-def validate(document: dict, expected_visual: str | None = None, require_pip: bool = False) -> dict:
+def validate(
+    document: dict,
+    expected_visual: str | None = None,
+    require_pip: bool = False,
+    pip_visual_review: dict | None = None,
+    require_visual_review: bool = False,
+) -> dict:
     tracks = document.get("tracks", [])
     pip_track = next((track for track in tracks if track.get("type") == "video" and track.get("name") == "SpeakerPiP"), None)
     broll_track = next((track for track in tracks if track.get("type") == "video" and track.get("name") == "B_Roll"), None)
@@ -34,6 +40,13 @@ def validate(document: dict, expected_visual: str | None = None, require_pip: bo
     pip_segments = pip_track.get("segments", []) if pip_track else []
     broll_segments = broll_track.get("segments", []) if broll_track else []
     errors = []
+    review_by_start = {
+        round(float(item.get("final_start", -1)), 3): item
+        for item in (pip_visual_review or {}).get("pip_reviews", [])
+        if item.get("status") == "approved"
+    }
+    if require_visual_review and (not pip_visual_review or pip_visual_review.get("status") != "succeeded"):
+        errors.append("PiP visual review is missing or did not pass")
     if pip_track is None:
         errors.append("SpeakerPiP track does not exist")
     if require_pip and not pip_segments:
@@ -50,17 +63,34 @@ def validate(document: dict, expected_visual: str | None = None, require_pip: bo
         elif expected and str(Path(str(material.get("path", ""))).resolve()) != expected:
             errors.append(f"PiP segment {index} does not use the approved silent rough-cut visual")
         mask_refs = [masks_by_id.get(item) for item in segment.get("extra_material_refs", [])]
-        if not any(mask and mask.get("name") in {"circle", "Circle", "圆形"} for mask in mask_refs):
+        circle = next((mask for mask in mask_refs if mask and mask.get("name") in {"circle", "Circle", "圆形"}), None)
+        if circle is None:
             errors.append(f"PiP segment {index} has no circular mask")
         clip = segment.get("clip", {})
         scale = clip.get("scale", {})
         transform = clip.get("transform", {})
-        if float(scale.get("x", 1.0)) >= 0.8 or float(scale.get("y", 1.0)) >= 0.8:
-            errors.append(f"PiP segment {index} is not scaled down")
+        if float(scale.get("x", 1.0)) > 1.15 or float(scale.get("y", 1.0)) > 1.15:
+            errors.append(f"PiP segment {index} exceeds the maximum source scale")
         if abs(float(transform.get("x", 0.0))) < 0.2 and abs(float(transform.get("y", 0.0))) < 0.2:
             errors.append(f"PiP segment {index} is still centered")
         if broll_segments and not any(overlaps(segment, broll) for broll in broll_segments):
             errors.append(f"PiP segment {index} does not overlap B-roll")
+        if circle is not None and require_visual_review:
+            config = circle.get("config", {})
+            visible_diameter = float(config.get("height", 0)) * float(scale.get("y", 1.0))
+            if not 0.18 <= visible_diameter <= 0.40:
+                errors.append(f"PiP segment {index} has an invalid effective circular size")
+            start = round(float(segment.get("target_timerange", {}).get("start", 0)) / 1_000_000, 3)
+            review = review_by_start.get(start)
+            if review is None:
+                errors.append(f"PiP segment {index} has no matching face-detection review")
+            else:
+                expected_x, expected_y = float(review["face_center_x"]), float(review["face_center_y"])
+                actual_x, actual_y = float(config.get("centerX", 0)), float(config.get("centerY", 0))
+                if abs(actual_x - expected_x) > 0.04 or abs(actual_y - expected_y) > 0.04:
+                    errors.append(f"PiP segment {index} circular mask is not centered on the detected face")
+                if abs(float(config.get("height", 0)) - float(review["mask_size"])) > 0.03:
+                    errors.append(f"PiP segment {index} circular mask size differs from face-driven review")
     return {
         "status": "passed" if not errors else "failed",
         "pip_segment_count": len(pip_segments),
@@ -75,12 +105,15 @@ def main() -> int:
     source.add_argument("--draft-path", type=Path)
     source.add_argument("--draft-name")
     parser.add_argument("--expected-visual", type=Path)
+    parser.add_argument("--pip-visual-review", type=Path)
     parser.add_argument("--require-pip", action="store_true")
+    parser.add_argument("--require-visual-review", action="store_true")
     args = parser.parse_args()
     try:
         path = args.draft_path.resolve() if args.draft_path else (default_draft_root() / args.draft_name).resolve()
         document = json.loads((path / "draft_info.json").read_text(encoding="utf-8"))
-        result = validate(document, str(args.expected_visual.resolve()) if args.expected_visual else None, args.require_pip)
+        visual_review = json.loads(args.pip_visual_review.read_text(encoding="utf-8")) if args.pip_visual_review else None
+        result = validate(document, str(args.expected_visual.resolve()) if args.expected_visual else None, args.require_pip, visual_review, args.require_visual_review)
         result["draft_path"] = str(path)
     except (OSError, RuntimeError, ValueError, json.JSONDecodeError) as error:
         result = {"status": "failed", "errors": [str(error)]}
