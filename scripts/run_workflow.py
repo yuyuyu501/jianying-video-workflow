@@ -222,6 +222,7 @@ def main() -> int:
             narrations[source_id] = narration
             qc_reports[source_id] = qc_report
             transcript = args.output_dir / "captions" / "rough-cut-transcripts" / f"{source_id}.json"
+            transcript.parent.mkdir(parents=True, exist_ok=True)
             run([
                 sys.executable, str(skills["video-understand"] / "scripts" / "understand_video.py"),
                 str(preview), "-o", str(transcript), "-q", "--max-frames", "1",
