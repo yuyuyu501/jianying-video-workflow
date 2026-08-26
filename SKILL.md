@@ -20,12 +20,13 @@ video-understand (external)
 -> global captions.srt + speech_timeline.json
 -> caption QC: rough-cut speech coverage, source mapping, text completeness, and reference-script coverage
 -> video-understand (final-timeline representative frames)
--> new JianYing draft skeleton + named-track QC, including SpeakerPiP
+-> optional SpeakerPiP analysis/review (only when source mix requests it)
+-> new JianYing draft skeleton + named-track QC, including an empty SpeakerPiP track
 -> jianying-asset-director (bundled)
 -> scene-effect/SFX shortlist and AI selection
 -> character-effect shortlist and AI selection
 -> jianying-editor (external)
--> materialize silent visual, narration, B-roll/PiP, captions, and effects on the named tracks
+-> materialize silent visual, narration, B-roll, optional PiP, captions, and effects on the named tracks
 -> per-stage and post-build composition QC
 ```
 
@@ -168,6 +169,35 @@ For rendered speech-led jobs, `--reference-script` is required for caption
 completeness QC. Use `--allow-no-reference-script` only when no approved copy
 exists; the report then records that script-level completeness was unavailable.
 
+After the empty skeleton exists, run SpeakerPiP as its own optional review
+stage. It does not write the draft: it creates `pip_visual_review.json`, one
+actual B-roll/speaker composite per candidate in `pip-face-review`, and
+`broll_plan.resolved.json`. The resolved plan retains B-roll but disables PiP
+when it has no stable complete-head crop or collision-free placement.
+
+```powershell
+python scripts/run_workflow.py `
+  --video "C:\path\to\doctor.mp4" `
+  --video "C:\path\to\illustration.mp4" `
+  --media-decisions "work\media_decisions.json" `
+  --semantic-exclusions "work\approved_semantic_cuts.json" `
+  --reference-script "C:\path\to\approved-script.txt" `
+  --caption-review "work\captions\caption_review.json" `
+  --beats "work\final-timeline-beats.json" `
+  --broll-plan "work\broll_plan.json" `
+  --draft-name "Heart_Emergency_2026-08-25" `
+  --render-rough-cut `
+  --prepare-speaker-pip `
+  --speaker-pip-mode auto `
+  --output-dir "work\video-job"
+```
+
+Run this stage only when full-frame B-roll needs the speaker to remain visibly
+identifiable. No B-roll, one talking-head source, or short assets that do not
+benefit from an identifiable speaker leave `SpeakerPiP` empty. `auto` skips
+unsafe requests, `off` skips the stage, and `require` needs a visual decision
+file that chooses one generated safe candidate.
+
 ## Draft Handoff Gate
 
 Before handing off the draft, verify:
@@ -192,12 +222,15 @@ Before handing off the draft, verify:
 - the approved rough-cut review has video, audio, compatible codecs, and no black frames;
 - the JianYing draft imports the silent visual on `MainVisual` and the
   validated narration on `Narration`; visual-only B-roll remains explicitly
-  muted on `B_Roll`; each `SpeakerPiP` segment uses the approved silent visual,
+  muted on `B_Roll`; optional `SpeakerPiP` segments use the approved silent visual,
   final-timeline source time, zero segment volume, and a circular mask;
   `pip_visual_review.json` must detect the speaker face from final-timeline
-  frames and supplies the mask center, head-focused crop size, source scale,
-  and face-anchored placement transform. Fixed face center, crop, or placement
-  constants are not permitted;
+  frames and supplies a complete-head envelope, protected information zones,
+  candidate placement, crop size, source scale, and face-anchored transform.
+  It also renders each candidate as a composite over its actual B-roll frame.
+  Fixed face center, crop, or placement constants are not permitted. In
+  `require` mode, an approved visual-decision file must select one safe
+  candidate. PiP is allowed to be skipped when no safe candidate exists;
 - JianYing effects and sound effects use validated local-library IDs;
 - every AI selection is constrained to its generated shortlist or an explicit
   no-effect decision, and the plan passes configured repetition limits;
@@ -248,7 +281,16 @@ Use `scripts/assemble_draft.py` only after the empty skeleton, caption QC, and
 AI effect selection are approved. It refuses a populated draft, rebuilds the
 verified empty skeleton in one editable session, and writes silent visual,
 narration, B-roll, optional circular speaker PiP, caption presentation, and
-approved effects. A B-roll plan can request PiP per segment:
+approved effects. PiP is a separate optional stage after the empty skeleton and
+before subtitle layout/assembly. The asset director requests it only when a
+full-frame B-roll segment needs the visible speaker identity; no B-roll, a
+single talking-head source, or short assets that do not benefit from a visible
+speaker all leave `SpeakerPiP` empty. Use `--speaker-pip-mode off` to skip it,
+`auto` to disable unsafe/unavailable segments, or `require` to fail when a
+requested segment has no approved visual decision. The stage writes candidate
+composites to `pip-face-review`; an AI or reviewer may return the selected
+safe position in `--speaker-pip-visual-decisions`. Omit `--broll-plan` when
+there is no B-roll. A B-roll plan can request PiP per segment:
 
 ```json
 {"segments": [{"video": "C:\\media\\demonstration.mp4", "start": 10.84, "duration": 3.0, "source_start": 0.0, "speaker_pip": {"enabled": true, "position": "upper_right"}}]}
@@ -265,6 +307,13 @@ python scripts/assemble_draft.py --draft-name "DraftName" `
   --asset-plan "work\selected_plan.json" `
   --output "work\draft_assembly.qc.json" `
   --rebuild-empty-skeleton
+```
+
+For a strict visual gate, generate a decision file after inspecting the
+candidate composites. Only a generated candidate marked `safe` may be chosen:
+
+```json
+{"status":"approved","decisions":[{"segment_index":1,"status":"approved","position":"middle_right","reason":"The head is complete and no title, diagram, or subtitle is obscured."}]}
 ```
 
 It rotates basic lower captions, middle warning captions, rounded-background

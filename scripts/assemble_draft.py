@@ -67,9 +67,12 @@ def load_broll_plan(path: Path, pip_visual_review: Path | None = None) -> list[d
     visual_reviews = {}
     if pip_visual_review is not None:
         review_payload = load_json(pip_visual_review)
-        if review_payload.get("status") != "succeeded":
+        if review_payload.get("status") not in {"succeeded", "skipped"}:
             raise ValueError("PiP visual review did not pass")
-        visual_reviews = {int(item["segment_index"]): item for item in review_payload.get("pip_reviews", [])}
+        visual_reviews = {
+            int(item["segment_index"]): item for item in review_payload.get("pip_reviews", [])
+            if item.get("status") == "approved"
+        }
     normalized = []
     for index, item in enumerate(segments, start=1):
         if not isinstance(item, dict):
@@ -90,12 +93,13 @@ def load_broll_plan(path: Path, pip_visual_review: Path | None = None) -> list[d
             raise ValueError(f"B-roll segment {index} requires a passing face-driven PiP visual review")
         if review is not None and (abs(float(review.get("final_start", -1)) - start) > 0.02 or abs(float(review.get("final_duration", -1)) - duration) > 0.02):
             raise ValueError(f"PiP visual review does not match B-roll segment {index}")
+        candidate = review.get("selected_candidate", {}) if review else {}
         scale = float(review.get("scale") if review else speaker_pip.get("scale", 0.34))
         face_center_x = float(review.get("face_center_x") if review else speaker_pip.get("face_center_x", 0.0))
         face_center_y = float(review.get("face_center_y") if review else speaker_pip.get("face_center_y", -0.22))
         mask_size = float(review.get("mask_size") if review else speaker_pip.get("mask_size", 0.52))
-        placement_x = float(review.get("placement_transform_x") if review else (-0.56 if speaker_pip.get("position") == "upper_left" else 0.56))
-        placement_y = float(review.get("placement_transform_y") if review else 0.53)
+        placement_x = float(candidate.get("placement_transform_x") if review else (-0.56 if speaker_pip.get("position") == "upper_left" else 0.56))
+        placement_y = float(candidate.get("placement_transform_y") if review else 0.20)
         if not 0.18 <= scale <= 1.15 or not 0.16 <= mask_size <= 0.60 or not -1.0 <= face_center_x <= 1.0 or not -1.0 <= face_center_y <= 1.0 or not -0.90 <= placement_x <= 0.90 or not -0.90 <= placement_y <= 0.90:
             raise ValueError(f"B-roll segment {index} has invalid speaker_pip scale or face center")
         normalized.append({
@@ -105,7 +109,7 @@ def load_broll_plan(path: Path, pip_visual_review: Path | None = None) -> list[d
             "source_start": source_start,
             "speaker_pip": {
                 "enabled": enabled,
-                "position": str(speaker_pip.get("position", "upper_right")),
+                "position": str(candidate.get("position") if review else speaker_pip.get("position", "upper_right")),
                 "scale": scale,
                 "face_center_x": face_center_x,
                 "face_center_y": face_center_y,
@@ -185,8 +189,8 @@ def main() -> int:
     parser.add_argument("--visual", type=Path, required=True, help="Validated silent rough-cut visual MP4")
     parser.add_argument("--narration", type=Path, required=True, help="Validated narration-only M4A")
     parser.add_argument("--captions", type=Path, required=True, help="Final-timeline SRT")
-    parser.add_argument("--broll-plan", type=Path, required=True)
-    parser.add_argument("--pip-visual-review", type=Path, required=True, help="Face-detection review generated from the final rough-cut visual")
+    parser.add_argument("--broll-plan", type=Path, help="Optional approved B-roll plan")
+    parser.add_argument("--pip-visual-review", type=Path, help="Optional face-detection review generated from the final rough-cut visual")
     parser.add_argument("--caption-layout-review", type=Path, required=True, help="Frame-checked caption layout review generated from the final rough-cut visual")
     parser.add_argument("--asset-plan", type=Path, help="Approved scene/character effect plan")
     parser.add_argument("--output", type=Path, required=True)
@@ -197,7 +201,11 @@ def main() -> int:
     try:
         if not args.rebuild_empty_skeleton:
             raise ValueError("--rebuild-empty-skeleton is required; materialization never overwrites a populated draft")
-        paths = [args.visual, args.narration, args.captions, args.broll_plan, args.pip_visual_review, args.caption_layout_review]
+        paths = [args.visual, args.narration, args.captions, args.caption_layout_review]
+        if args.broll_plan:
+            paths.append(args.broll_plan)
+        if args.pip_visual_review:
+            paths.append(args.pip_visual_review)
         if args.asset_plan:
             paths.append(args.asset_plan)
         for path in paths:
@@ -211,7 +219,7 @@ def main() -> int:
         draft_info_path = draft_path / "draft_info.json"
         empty_skeleton_backup = draft_info_path.read_bytes()
         require_empty_skeleton(load_json(draft_info_path))
-        broll = load_broll_plan(args.broll_plan.resolve(), args.pip_visual_review.resolve())
+        broll = load_broll_plan(args.broll_plan.resolve(), args.pip_visual_review.resolve() if args.pip_visual_review else None) if args.broll_plan else []
         entries = read_srt(captions)
         caption_layout_review = load_json(args.caption_layout_review.resolve())
         if caption_layout_review.get("status") != "succeeded":
@@ -275,7 +283,11 @@ def main() -> int:
                 require_visual_layout_review=True,
             ),
             "narration": validate_narration(document, "Narration", expected_duration),
-            "pip": validate_pip(document, str(visual), require_pip=any(item["speaker_pip"]["enabled"] for item in broll), pip_visual_review=load_json(args.pip_visual_review.resolve()), require_visual_review=True),
+            "pip": validate_pip(
+                document, str(visual), require_pip=any(item["speaker_pip"]["enabled"] for item in broll),
+                pip_visual_review=load_json(args.pip_visual_review.resolve()) if args.pip_visual_review else None,
+                require_visual_review=bool(args.pip_visual_review),
+            ),
             "effects": validate_effects(document, visual_effect_count, character_effect_count),
         }
         errors = [f"{name}: " + "; ".join(report["errors"]) for name, report in reports.items() if report["status"] != "passed"]

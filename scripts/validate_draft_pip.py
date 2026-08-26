@@ -45,7 +45,7 @@ def validate(
         for item in (pip_visual_review or {}).get("pip_reviews", [])
         if item.get("status") == "approved"
     }
-    if require_visual_review and (not pip_visual_review or pip_visual_review.get("status") != "succeeded"):
+    if require_visual_review and (not pip_visual_review or pip_visual_review.get("status") not in {"succeeded", "skipped"}):
         errors.append("PiP visual review is missing or did not pass")
     if pip_track is None:
         errors.append("SpeakerPiP track does not exist")
@@ -92,9 +92,12 @@ def validate(
                 if abs(float(config.get("height", 0)) - float(review["mask_size"])) > 0.03:
                     errors.append(f"PiP segment {index} circular mask size differs from face-driven review")
                 face_fill = float(review.get("face_fill_ratio", 0))
-                if not 0.66 <= face_fill <= 0.78:
-                    errors.append(f"PiP segment {index} does not use a head-focused crop")
-                if abs(float(transform.get("x", 0)) - float(review["placement_transform_x"])) > 0.04 or abs(float(transform.get("y", 0)) - float(review["placement_transform_y"])) > 0.04:
+                if not 0.45 <= face_fill <= 0.58 or not review.get("head_envelope"):
+                    errors.append(f"PiP segment {index} does not use a complete-head crop")
+                candidate = review.get("selected_candidate", {})
+                if not candidate.get("safe"):
+                    errors.append(f"PiP segment {index} has no approved collision-free placement")
+                if abs(float(transform.get("x", 0)) - float(candidate.get("placement_transform_x", 0))) > 0.04 or abs(float(transform.get("y", 0)) - float(candidate.get("placement_transform_y", 0))) > 0.04:
                     errors.append(f"PiP segment {index} is not anchored to the detected face")
     return {
         "status": "passed" if not errors else "failed",

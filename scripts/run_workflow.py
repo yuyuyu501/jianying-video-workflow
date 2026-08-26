@@ -72,6 +72,9 @@ def main() -> int:
     parser.add_argument("--speech-timeline", type=Path, help="Required companion JSON for --srt")
     parser.add_argument("--beats", type=Path)
     parser.add_argument("--broll-plan", type=Path, help="Approved B-roll JSON; segments may request circular speaker_pip")
+    parser.add_argument("--speaker-pip-mode", choices=("auto", "off", "require"), default="auto", help="Optional speaker PiP stage: auto skips unsafe/unavailable PiP, off disables it, require fails if requested PiP cannot pass review")
+    parser.add_argument("--speaker-pip-visual-decisions", type=Path, help="Optional approved model/human decisions for generated SpeakerPiP candidate previews; required by --speaker-pip-mode require")
+    parser.add_argument("--prepare-speaker-pip", action="store_true", help="Run only the optional SpeakerPiP analysis/review stage after creating the draft skeleton; it writes review artifacts but does not modify the draft")
     parser.add_argument("--approved-asset-plan", type=Path, help="AI-approved selected asset plan used only with --materialize-draft")
     parser.add_argument("--materialize-draft", action="store_true", help="Write the approved single-speaker plan into the new validated JianYing draft")
     parser.add_argument("--draft-name", help="New JianYing draft name; required with --beats to create the validated track skeleton")
@@ -101,14 +104,16 @@ def main() -> int:
         raise ValueError("--srt and --speech-timeline must be supplied together")
     if bool(args.beats) != bool(args.draft_name):
         raise ValueError("--beats and --draft-name must be supplied together so analysis starts from a validated draft skeleton")
-    if args.materialize_draft and (not args.beats or not args.broll_plan or not args.approved_asset_plan):
-        raise ValueError("--materialize-draft requires --beats, --broll-plan, and --approved-asset-plan")
+    if args.materialize_draft and (not args.beats or not args.approved_asset_plan):
+        raise ValueError("--materialize-draft requires --beats and --approved-asset-plan")
     if args.materialize_draft and not args.render_rough_cut:
         raise ValueError("--materialize-draft requires --render-rough-cut so it can import validated silent visual and narration artifacts")
+    if args.prepare_speaker_pip and (not args.render_rough_cut or not args.beats):
+        raise ValueError("--prepare-speaker-pip requires --render-rough-cut and --beats so it uses the validated rough-cut timeline and draft skeleton")
     jianying_python = args.jianying_python or Path(os.environ.get("JY_PYTHON", "").strip() or sys.executable)
     if not jianying_python.is_file():
         raise FileNotFoundError(f"JianYing Python executable not found: {jianying_python}")
-    for path in (args.srt, args.speech_timeline, args.caption_review, args.broll_plan, args.approved_asset_plan):
+    for path in (args.srt, args.speech_timeline, args.caption_review, args.broll_plan, args.approved_asset_plan, args.speaker_pip_visual_decisions):
         if path and not path.is_file():
             raise FileNotFoundError(path)
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -330,31 +335,41 @@ def main() -> int:
     draft_assembly = None
     draft_assembly_qc = None
     pip_visual_review = None
+    resolved_broll_plan = None
     caption_layout_review = None
-    if args.materialize_draft:
+    if args.prepare_speaker_pip or args.materialize_draft:
         if len(speech_sources) != 1:
-            raise RuntimeError("--materialize-draft currently requires exactly one narration source so SpeakerPiP can use its verified silent visual")
+            raise RuntimeError("SpeakerPiP currently requires exactly one narration source so it can use that source's verified silent visual")
         if generated_srt is None or speech_timeline is None or skeleton_draft is None:
-            raise RuntimeError("draft materialization requires generated captions and a validated skeleton")
+            raise RuntimeError("SpeakerPiP preparation requires generated captions and a validated skeleton")
         source_id = str(speech_sources[0]["id"])
-        draft_assembly_qc = args.output_dir / "draft_assembly.qc.json"
         pip_visual_review = args.output_dir / "pip_visual_review.json"
-        caption_layout_review = args.output_dir / "caption_layout_review.json"
+        resolved_broll_plan = args.output_dir / "broll_plan.resolved.json"
+        if args.broll_plan:
+            broll_input = args.broll_plan.resolve()
+        else:
+            broll_input = args.output_dir / "broll_plan.empty.json"
+            write_json(broll_input, {"version": 1, "segments": []})
         run([
             sys.executable, str(Path(__file__).resolve().with_name("analyze_pip_faces.py")),
-            "--visual", str(visuals[source_id]), "--broll-plan", str(args.broll_plan.resolve()),
-            "--output", str(pip_visual_review), "--preview-dir", str(args.output_dir / "pip-face-review"),
-        ])
+            "--visual", str(visuals[source_id]), "--broll-plan", str(broll_input),
+            "--mode", args.speaker_pip_mode, "--output", str(pip_visual_review),
+            "--resolved-broll-plan", str(resolved_broll_plan), "--preview-dir", str(args.output_dir / "pip-face-review"),
+        ] + (["--visual-decisions", str(args.speaker_pip_visual_decisions.resolve())] if args.speaker_pip_visual_decisions else []))
+    if args.materialize_draft:
+        source_id = str(speech_sources[0]["id"])
+        draft_assembly_qc = args.output_dir / "draft_assembly.qc.json"
+        caption_layout_review = args.output_dir / "caption_layout_review.json"
         run([
             sys.executable, str(Path(__file__).resolve().with_name("analyze_caption_layout.py")),
             "--visual", str(visuals[source_id]), "--captions", str(generated_srt),
-            "--broll-plan", str(args.broll_plan.resolve()), "--output", str(caption_layout_review),
+            "--broll-plan", str(resolved_broll_plan), "--output", str(caption_layout_review),
         ])
         command = [
             str(jianying_python.resolve()), str(Path(__file__).resolve().with_name("assemble_draft.py")),
             "--draft-name", args.draft_name,
             "--visual", str(visuals[source_id]), "--narration", str(narrations[source_id]),
-            "--captions", str(generated_srt), "--broll-plan", str(args.broll_plan.resolve()),
+            "--captions", str(generated_srt), "--broll-plan", str(resolved_broll_plan),
             "--pip-visual-review", str(pip_visual_review),
             "--caption-layout-review", str(caption_layout_review),
             "--asset-plan", str(args.approved_asset_plan.resolve()), "--output", str(draft_assembly_qc),
@@ -398,8 +413,11 @@ def main() -> int:
         "draft_assembly": draft_assembly,
         "draft_assembly_qc": str(draft_assembly_qc) if draft_assembly_qc else None,
         "pip_visual_review": str(pip_visual_review) if pip_visual_review else None,
+        "resolved_broll_plan": str(resolved_broll_plan) if resolved_broll_plan else None,
         "caption_layout_review": str(caption_layout_review) if caption_layout_review else None,
-        "next_step": "Review candidate plans, then rerun with --materialize-draft, --approved-asset-plan, and --broll-plan to write a validated editable draft; otherwise the empty skeleton remains unchanged.",
+        "speaker_pip_mode": args.speaker_pip_mode,
+        "speaker_pip_visual_decisions": str(args.speaker_pip_visual_decisions.resolve()) if args.speaker_pip_visual_decisions else None,
+        "next_step": "Review asset selections and any SpeakerPiP candidate composites, then rerun with --materialize-draft and --approved-asset-plan to write a validated editable draft; otherwise the empty skeleton remains unchanged.",
     }
     print("RESULT: " + json.dumps(result, ensure_ascii=False))
     return 0

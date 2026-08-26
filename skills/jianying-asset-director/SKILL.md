@@ -74,17 +74,26 @@ draft skeleton before asset selection so every later write has a fixed target.
 10. **User gate**: output the timestamped plan, selected assets, rejected
    candidates, and unresolved decisions. If the user has asked to proceed,
    continue; otherwise wait for confirmation.
-11. **Build**: call `jianying-editor` in draft-library-only mode to add the
+11. **Optional SpeakerPiP review**: after the skeleton, request PiP only when
+    full-frame B-roll would otherwise lose the speaker's identity. Run
+    `analyze_pip_faces.py` to detect a complete head, reject protected-zone
+    collisions, and render every candidate over a representative B-roll frame.
+    A visual model or reviewer may approve one `safe` candidate or reject the
+    segment. No B-roll, a single talking-head visual, or short assets without
+    an identity need leave this track empty. This stage never writes the draft.
+12. **Build**: call `jianying-editor` in draft-library-only mode to add the
    approved main visual, narration, subtitles, styles, B-roll, effects, and
    SFX to the validated skeleton. When B-roll still needs an identifiable
-   speaker, declare `speaker_pip.enabled` for that beat and place a circular,
-   muted crop of the approved silent rough-cut visual on `SpeakerPiP`; its
+   speaker, hand the beat to the separate optional SpeakerPiP stage. Declare
+   `speaker_pip.enabled` only when that stage is requested; it may disable the
+   request after complete-head and protected-zone checks. A passing request
+   places a circular, muted crop of the approved silent rough-cut visual on `SpeakerPiP`; its
    source start must equal final-timeline start. Do not create another draft, launch JianYing, automate its UI, invoke
    `JianyingController`, or call an exporter. Use separate tracks for effects
    and each audio role. Sound effects use the skeleton's `SFX` track; do not
    silently create a new named audio track. Keep source asset IDs, local cache paths, and the
    absolute draft path in the build report.
-12. **Validate**: after each materialization stage and at the end, run the
+13. **Validate**: after each materialization stage and at the end, run the
    relevant track validator plus `scripts/asset_director.py validate` and the
    `jianying-editor` draft inspector. Check asset existence, effect/audio
    timing, volume, overlap with captions/PiP, opening cleanliness, and that
