@@ -141,6 +141,25 @@ class CaptionQcTests(unittest.TestCase):
         report = draft_captions.validate(document, entries, "Subtitles", require_style_variation=True)
         self.assertEqual(report["status"], "passed", report["errors"])
 
+    def test_draft_caption_validation_recognizes_linked_flower_material(self):
+        document = {
+            "materials": {
+                "texts": [
+                    {"id": "one", "content": json.dumps({"text": "普通字幕", "styles": [{}]}, ensure_ascii=False)},
+                    {"id": "two", "content": json.dumps({"text": "花字字幕", "styles": [{}]}, ensure_ascii=False)},
+                ],
+                "effects": [{"id": "flower-effect", "type": "text_effect"}],
+            },
+            "tracks": [{"type": "text", "name": "Subtitles", "segments": [
+                {"material_id": "one", "target_timerange": {"start": 0, "duration": 1_000_000}, "clip": {"transform": {"y": -0.72}}},
+                {"material_id": "two", "target_timerange": {"start": 1_000_000, "duration": 1_000_000}, "extra_material_refs": ["flower-effect"], "clip": {"transform": {"y": -0.08}}},
+            ]}],
+        }
+        entries = [{"start": 0.0, "end": 1.0, "text": "普通字幕"}, {"start": 1.0, "end": 2.0, "text": "花字字幕"}]
+        report = draft_captions.validate(document, entries, "Subtitles", require_style_variation=True)
+        self.assertEqual(report["status"], "passed", report["errors"])
+        self.assertEqual(report["style_types"], ["base", "flower"])
+
 
 if __name__ == "__main__":
     unittest.main()

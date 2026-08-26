@@ -136,6 +136,12 @@ def add_caption(project, draft, entry: dict, presentation: dict) -> None:
     )
     if variant == "flower_bottom":
         segment.add_effect(presentation["flower_effect_id"])
+        # The current pyJianYingDraft release can serialize TextEffect but does
+        # not accept it in its generic material-membership check. Register it
+        # once here and clear the temporary segment reference to avoid that
+        # incompatible second registration during project.save().
+        project.script.materials.filters.append(segment.effect)
+        segment.effect = None
     project.script.add_segment(segment, "Subtitles")
 
 
@@ -165,6 +171,8 @@ def main() -> int:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--rebuild-empty-skeleton", action="store_true", help="Explicitly rebuild the verified empty skeleton in one editable session")
     args = parser.parse_args()
+    draft_info_path: Path | None = None
+    empty_skeleton_backup: bytes | None = None
     try:
         if not args.rebuild_empty_skeleton:
             raise ValueError("--rebuild-empty-skeleton is required; materialization never overwrites a populated draft")
@@ -179,7 +187,9 @@ def main() -> int:
             raise ValueError("rough-cut visual must have no audio stream; use the validated silent visual artifact")
         drafts_root = args.drafts_root.resolve() if args.drafts_root else default_drafts_root().resolve()
         draft_path = drafts_root / args.draft_name
-        require_empty_skeleton(load_json(draft_path / "draft_info.json"))
+        draft_info_path = draft_path / "draft_info.json"
+        empty_skeleton_backup = draft_info_path.read_bytes()
+        require_empty_skeleton(load_json(draft_info_path))
         broll = load_broll_plan(args.broll_plan.resolve())
         entries = read_srt(captions)
         editor_skill = locate_editor_skill()
@@ -239,8 +249,18 @@ def main() -> int:
             "validation": reports,
             "errors": errors,
         }
-    except (OSError, RuntimeError, ValueError, json.JSONDecodeError, subprocess.CalledProcessError) as error:
+    except (OSError, RuntimeError, TypeError, ValueError, json.JSONDecodeError, subprocess.CalledProcessError) as error:
+        rollback_error = None
+        if draft_info_path is not None and empty_skeleton_backup is not None:
+            try:
+                draft_info_path.write_bytes(empty_skeleton_backup)
+            except OSError as restore_error:
+                rollback_error = str(restore_error)
         report = {"status": "failed", "errors": [str(error)]}
+        if rollback_error:
+            report["rollback_error"] = rollback_error
+        elif empty_skeleton_backup is not None:
+            report["rollback"] = "restored_empty_skeleton"
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print("RESULT: " + json.dumps(report, ensure_ascii=False))
