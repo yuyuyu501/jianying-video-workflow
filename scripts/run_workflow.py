@@ -120,6 +120,10 @@ def main() -> int:
         return 2
 
     analysis_dir = args.output_dir / "analysis"
+    # The external video-understand CLI writes directly to its output path.
+    # Create the child directory before the first analysis so a clean run is
+    # equivalent to a rerun with an existing workspace.
+    analysis_dir.mkdir(parents=True, exist_ok=True)
     analyses: list[Path] = []
     for index, video in enumerate(videos, start=1):
         analysis = analysis_dir / f"source_{index:02d}_{video.stem}.json"
