@@ -93,7 +93,7 @@ class CaptionQcTests(unittest.TestCase):
 
     def test_caption_split_breaks_at_commas_with_continuous_timestamps(self):
         entries = media_role.split_caption_entry({"start": 10.0, "end": 14.0, "text": "第一步，立刻坐下，保持半卧位。"})
-        self.assertEqual([entry["text"] for entry in entries], ["第一步，", "立刻坐下，", "保持半卧位。"])
+        self.assertEqual([entry["text"] for entry in entries], ["第一步", "立刻坐下", "保持半卧位"])
         self.assertEqual(entries[0]["start"], 10.0)
         self.assertEqual(entries[-1]["end"], 14.0)
         self.assertTrue(all(left["end"] == right["start"] for left, right in zip(entries, entries[1:])))
@@ -104,6 +104,10 @@ class CaptionQcTests(unittest.TestCase):
         self.assertGreater(len(entries), 1)
         self.assertTrue(all(media_role.caption_reading_weight(entry["text"]) <= 10 for entry in entries))
         self.assertEqual("".join(entry["text"] for entry in entries), text)
+
+    def test_caption_split_removes_all_display_punctuation(self):
+        entries = media_role.split_caption_entry({"start": 0.0, "end": 3.0, "text": "赶紧坐下，立刻拨打120！"})
+        self.assertEqual([entry["text"] for entry in entries], ["赶紧坐下", "立刻拨打120"])
 
     def test_draft_caption_validation_rejects_text_mismatch(self):
         document = {

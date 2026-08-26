@@ -94,7 +94,9 @@ def load_broll_plan(path: Path, pip_visual_review: Path | None = None) -> list[d
         face_center_x = float(review.get("face_center_x") if review else speaker_pip.get("face_center_x", 0.0))
         face_center_y = float(review.get("face_center_y") if review else speaker_pip.get("face_center_y", -0.22))
         mask_size = float(review.get("mask_size") if review else speaker_pip.get("mask_size", 0.52))
-        if not 0.18 <= scale <= 1.15 or not 0.16 <= mask_size <= 0.60 or not -1.0 <= face_center_x <= 1.0 or not -1.0 <= face_center_y <= 1.0:
+        placement_x = float(review.get("placement_transform_x") if review else (-0.56 if speaker_pip.get("position") == "upper_left" else 0.56))
+        placement_y = float(review.get("placement_transform_y") if review else 0.53)
+        if not 0.18 <= scale <= 1.15 or not 0.16 <= mask_size <= 0.60 or not -1.0 <= face_center_x <= 1.0 or not -1.0 <= face_center_y <= 1.0 or not -0.90 <= placement_x <= 0.90 or not -0.90 <= placement_y <= 0.90:
             raise ValueError(f"B-roll segment {index} has invalid speaker_pip scale or face center")
         normalized.append({
             "video": video,
@@ -108,6 +110,8 @@ def load_broll_plan(path: Path, pip_visual_review: Path | None = None) -> list[d
                 "face_center_x": face_center_x,
                 "face_center_y": face_center_y,
                 "mask_size": mask_size,
+                "placement_transform_x": placement_x,
+                "placement_transform_y": placement_y,
                 "visual_review": review,
             },
         })
@@ -231,12 +235,13 @@ def main() -> int:
                 source_start = item["start"]
                 source_range = draft.Timerange(round(source_start * 1_000_000), round(item["duration"] * 1_000_000))
                 pip = item["speaker_pip"]
-                position = pip["position"]
-                transform_x = -0.56 if position == "upper_left" else 0.56
                 segment = draft.VideoSegment(
                     draft.VideoMaterial(str(visual)), draft.Timerange(round(item["start"] * 1_000_000), source_range.duration),
                     source_timerange=source_range, volume=0.0,
-                    clip_settings=draft.ClipSettings(scale_x=pip["scale"], scale_y=pip["scale"], transform_x=transform_x, transform_y=0.53),
+                    clip_settings=draft.ClipSettings(
+                        scale_x=pip["scale"], scale_y=pip["scale"],
+                        transform_x=pip["placement_transform_x"], transform_y=pip["placement_transform_y"],
+                    ),
                 )
                 segment.add_mask(
                     draft.MaskType.圆形,

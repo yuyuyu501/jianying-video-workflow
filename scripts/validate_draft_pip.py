@@ -91,6 +91,11 @@ def validate(
                     errors.append(f"PiP segment {index} circular mask is not centered on the detected face")
                 if abs(float(config.get("height", 0)) - float(review["mask_size"])) > 0.03:
                     errors.append(f"PiP segment {index} circular mask size differs from face-driven review")
+                face_fill = float(review.get("face_fill_ratio", 0))
+                if not 0.66 <= face_fill <= 0.78:
+                    errors.append(f"PiP segment {index} does not use a head-focused crop")
+                if abs(float(transform.get("x", 0)) - float(review["placement_transform_x"])) > 0.04 or abs(float(transform.get("y", 0)) - float(review["placement_transform_y"])) > 0.04:
+                    errors.append(f"PiP segment {index} is not anchored to the detected face")
     return {
         "status": "passed" if not errors else "failed",
         "pip_segment_count": len(pip_segments),

@@ -37,8 +37,8 @@ clip is not the primary talking head.
    script exists, pass `--reference-script` so unacknowledged sentence-tail
    truncation also blocks the workflow. Reviewed entries do not need manual
    visual line breaks: final SRT generation splits at commas, pauses, and
-   sentence punctuation, then continuously divides the existing rough-cut
-   range by reading length. The default maximum is 18 non-punctuation
+   sentence punctuation, removes those display-only punctuation marks, then
+   continuously divides the existing rough-cut range by reading length. The default maximum is 18 non-punctuation
    characters and can be changed with `--max-chars`.
 
 ## Roles And Audio Policies

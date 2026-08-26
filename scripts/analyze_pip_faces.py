@@ -10,6 +10,14 @@ from pathlib import Path
 from statistics import median
 
 
+HEAD_FILL_RATIO = 0.72
+VISIBLE_DIAMETER_RATIO = 0.22
+PIP_ANCHORS = {
+    "upper_left": (-0.56, 0.53),
+    "upper_right": (0.56, 0.53),
+}
+
+
 def load_json(path: Path) -> dict:
     payload = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
@@ -37,6 +45,22 @@ def choose_face(boxes: list[tuple[int, int, int, int]], width: int, height: int)
         score = area * max(0.20, 1.35 - 0.35 * distance)
         candidates.append((score, (x, y, w, h)))
     return max(candidates, default=(0.0, None), key=lambda item: item[0])[1]
+
+
+def consistent_detections(detections: list[dict]) -> list[dict]:
+    """Discard a torso-sized cascade false positive before calculating a head crop."""
+    if len(detections) < 2:
+        return []
+    boxes = [item["bbox"] for item in detections]
+    median_x = median(item["x"] + item["width"] / 2 for item in boxes)
+    median_y = median(item["y"] + item["height"] / 2 for item in boxes)
+    median_size = median((item["width"] + item["height"]) / 2 for item in boxes)
+    return [
+        item for item in detections
+        if abs(item["bbox"]["x"] + item["bbox"]["width"] / 2 - median_x) <= median_size * 0.45
+        and abs(item["bbox"]["y"] + item["bbox"]["height"] / 2 - median_y) <= median_size * 0.45
+        and 0.70 <= ((item["bbox"]["width"] + item["bbox"]["height"]) / 2) / median_size <= 1.30
+    ]
 
 
 def detect_review(video: Path, broll_plan: Path, preview_dir: Path | None = None) -> dict:
@@ -91,6 +115,7 @@ def detect_review(video: Path, broll_plan: Path, preview_dir: Path | None = None
                 encoded, buffer = cv2.imencode(".jpg", annotated)
                 if encoded:
                     buffer.tofile(str(preview_dir / f"pip_{index:02d}_sample_{sample_index}.jpg"))
+        detections = consistent_detections(detections)
         if len(detections) < 2:
             errors.append(f"PiP segment {index} has only {len(detections)} reliable face detections")
             continue
@@ -101,11 +126,21 @@ def detect_review(video: Path, broll_plan: Path, preview_dir: Path | None = None
         face_h = median(item["height"] for item in boxes)
         center_x = (face_x + face_w / 2) / width * 2 - 1
         center_y = (face_y + face_h / 2) / height * 2 - 1
-        # Let the face fill roughly 57% of the circular window. The source
-        # can be scaled close to full size because the circle remains small.
-        mask_size = clamp((face_h / height) / 0.57, 0.20, 0.42)
-        visible_diameter = 0.28
+        # A head-focused window keeps facial context while excluding the torso.
+        # The final circle remains compact even though the source stays sharp.
+        mask_size = clamp((face_h / height) / HEAD_FILL_RATIO, 0.18, 0.34)
+        visible_diameter = VISIBLE_DIAMETER_RATIO
         scale = clamp(visible_diameter / mask_size, 0.45, 1.15)
+        position = str(pip.get("position", "upper_right"))
+        if position not in PIP_ANCHORS:
+            errors.append(f"PiP segment {index} has unsupported position: {position}")
+            continue
+        anchor_x, anchor_y = PIP_ANCHORS[position]
+        # A mask center is local to the source. Compensate for its local face
+        # offset so the *detected face*, not the source center, reaches the
+        # intended upper-corner anchor after JianYing applies clip scaling.
+        placement_x = clamp(anchor_x - center_x * scale, -0.90, 0.90)
+        placement_y = clamp(anchor_y - center_y * scale, -0.90, 0.90)
         reviews.append({
             "segment_index": index,
             "final_start": round(start, 3),
@@ -120,6 +155,11 @@ def detect_review(video: Path, broll_plan: Path, preview_dir: Path | None = None
             "mask_size": round(mask_size, 4),
             "scale": round(scale, 4),
             "visible_diameter_ratio": round(mask_size * scale, 4),
+            "position": position,
+            "face_anchor_x": anchor_x,
+            "face_anchor_y": anchor_y,
+            "placement_transform_x": round(placement_x, 4),
+            "placement_transform_y": round(placement_y, 4),
             "status": "approved",
         })
     capture.release()

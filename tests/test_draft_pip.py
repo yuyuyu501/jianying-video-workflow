@@ -53,7 +53,21 @@ class DraftPipTests(unittest.TestCase):
         document["materials"]["masks"][0]["config"] = {"centerX": 0.0, "centerY": -0.2, "height": 0.5}
         review = {"status": "succeeded", "pip_reviews": [{
             "final_start": 2.0, "face_center_x": 0.0, "face_center_y": -0.2, "mask_size": 0.5,
+            "face_fill_ratio": 0.72, "placement_transform_x": 0.56, "placement_transform_y": 0.53,
         }]}
         report = pip.validate(document, require_pip=True, pip_visual_review=review, require_visual_review=True)
         self.assertEqual(report["status"], "failed")
         self.assertTrue(any("effective circular size" in error for error in report["errors"]))
+
+    def test_visual_review_rejects_unanchored_or_torso_crop(self):
+        document = self.document()
+        document["materials"]["masks"][0]["config"] = {"centerX": 0.0, "centerY": -0.2, "height": 0.24}
+        document["tracks"][1]["segments"][0]["clip"]["scale"] = {"x": 0.92, "y": 0.92}
+        review = {"status": "succeeded", "pip_reviews": [{
+            "final_start": 2.0, "face_center_x": 0.0, "face_center_y": -0.2, "mask_size": 0.24, "status": "approved",
+            "face_fill_ratio": 0.57, "placement_transform_x": 0.50, "placement_transform_y": 0.71,
+        }]}
+        report = pip.validate(document, require_pip=True, pip_visual_review=review, require_visual_review=True)
+        self.assertEqual(report["status"], "failed")
+        self.assertTrue(any("head-focused" in error for error in report["errors"]))
+        self.assertTrue(any("anchored" in error for error in report["errors"]))

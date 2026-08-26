@@ -154,9 +154,10 @@ materialized on the existing draft tracks.
 
 Final SRT entries are generated only from the rendered rough-cut timebase. The
 caption review keeps natural transcript ranges; the caption stage then splits
-long reviewed text at commas, pauses, and sentence punctuation (default 18
-non-punctuation characters) and apportions each existing time range without
-gaps. This keeps readable short captions without remapping raw-camera time.
+long reviewed text at commas, pauses, and sentence punctuation, removes those
+display-only punctuation marks (default 18 non-punctuation characters), and
+apportions each existing time range without gaps. This keeps readable short
+captions without remapping raw-camera time.
 
 When the speaker is following a supplied script, pass that script to the rough
 cut stage and review the generated script-alignment report. The rough cut must
@@ -194,8 +195,9 @@ Before handing off the draft, verify:
   muted on `B_Roll`; each `SpeakerPiP` segment uses the approved silent visual,
   final-timeline source time, zero segment volume, and a circular mask;
   `pip_visual_review.json` must detect the speaker face from final-timeline
-  frames and supplies the mask center, crop size, and source scale. Fixed face
-  center or crop constants are not permitted;
+  frames and supplies the mask center, head-focused crop size, source scale,
+  and face-anchored placement transform. Fixed face center, crop, or placement
+  constants are not permitted;
 - JianYing effects and sound effects use validated local-library IDs;
 - every AI selection is constrained to its generated shortlist or an explicit
   no-effect decision, and the plan passes configured repetition limits;

@@ -404,8 +404,13 @@ def caption_reading_weight(text: str) -> int:
     return max(1, sum(1 for character in text if not character.isspace() and character not in CAPTION_BREAK_PUNCTUATION))
 
 
+def display_caption_text(text: str) -> str:
+    """Keep spoken words while removing punctuation used only as visual breaks."""
+    return "".join(character for character in text if character not in CAPTION_BREAK_PUNCTUATION).strip()
+
+
 def split_caption_entry(entry: dict[str, Any], max_chars: int = CAPTION_MAX_CHARS) -> list[dict[str, Any]]:
-    """Split a reviewed rough-cut caption at commas and sentence punctuation.
+    """Split a reviewed rough-cut caption at punctuation without displaying it.
 
     The review remains the source of truth for text and timing. Splitting happens
     only after review, and proportionally subdivides its existing time range so
@@ -423,13 +428,17 @@ def split_caption_entry(entry: dict[str, Any], max_chars: int = CAPTION_MAX_CHAR
     for character in text:
         current += character
         if character in CAPTION_BREAK_PUNCTUATION:
-            chunks.append(current.strip())
+            spoken = display_caption_text(current)
+            if spoken:
+                chunks.append(spoken)
             current = ""
         elif caption_reading_weight(current) >= max_chars:
-            chunks.append(current.strip())
+            spoken = display_caption_text(current)
+            if spoken:
+                chunks.append(spoken)
             current = ""
-    if current.strip():
-        chunks.append(current.strip())
+    if display_caption_text(current):
+        chunks.append(display_caption_text(current))
     chunks = [chunk for chunk in chunks if chunk]
     if len(chunks) == 1:
         return [{**entry, "start": round(start, 3), "end": round(end, 3), "text": chunks[0]}]
