@@ -79,6 +79,9 @@ def main() -> int:
     parser.add_argument("--prepare-speaker-pip", action="store_true", help="Run only the optional SpeakerPiP analysis/review stage after creating the draft skeleton; it writes review artifacts but does not modify the draft")
     parser.add_argument("--prepare-caption-design", action="store_true", help="Extract representative caption frames and write a semantic caption-plan template for AI review without modifying the draft")
     parser.add_argument("--approved-asset-plan", type=Path, help="AI-approved selected asset plan used only with --materialize-draft")
+    parser.add_argument("--approved-visual-treatment-plan", type=Path, help="Approved one-treatment-per-beat editorial plan; gates effect candidate generation and draft materialization")
+    parser.add_argument("--approved-effect-visual-review", type=Path, help="Approved per-effect pixel observations from a real JianYing render")
+    parser.add_argument("--effect-review-video", type=Path, help="Real JianYing-rendered preview/export inspected by --approved-effect-visual-review")
     parser.add_argument("--approved-filter-plan", type=Path, help="AI-approved portrait filter plan used only with --materialize-draft")
     parser.add_argument("--approved-sticker-plan", type=Path, help="AI-approved content-aware sticker plan used only with --materialize-draft")
     parser.add_argument("--approved-caption-plan", type=Path, help="AI-approved semantic and frame-reviewed caption design plan used only with --materialize-draft")
@@ -116,8 +119,10 @@ def main() -> int:
         raise ValueError("--srt and --speech-timeline must be supplied together")
     if bool(args.beats) != bool(args.draft_name):
         raise ValueError("--beats and --draft-name must be supplied together so analysis starts from a validated draft skeleton")
-    if args.materialize_draft and (not args.beats or not args.approved_asset_plan):
-        raise ValueError("--materialize-draft requires --beats and --approved-asset-plan")
+    if args.materialize_draft and (not args.beats or not args.approved_asset_plan or not args.approved_visual_treatment_plan):
+        raise ValueError("--materialize-draft requires --beats, --approved-visual-treatment-plan, and --approved-asset-plan")
+    if bool(args.approved_effect_visual_review) != bool(args.effect_review_video):
+        raise ValueError("--approved-effect-visual-review and --effect-review-video must be supplied together")
     if args.materialize_draft and (not args.approved_filter_plan or not args.approved_sticker_plan):
         raise ValueError("--materialize-draft requires reviewed --approved-filter-plan and --approved-sticker-plan; an empty approved plan must include a specific skip_reason")
     if args.materialize_draft and not args.approved_caption_plan:
@@ -131,7 +136,7 @@ def main() -> int:
     jianying_python = args.jianying_python or Path(os.environ.get("JY_PYTHON", "").strip() or sys.executable)
     if not jianying_python.is_file():
         raise FileNotFoundError(f"JianYing Python executable not found: {jianying_python}")
-    for path in (args.srt, args.speech_timeline, args.caption_review, args.broll_plan, args.approved_asset_plan, args.approved_filter_plan, args.approved_sticker_plan, args.approved_caption_plan, args.speaker_pip_visual_decisions, args.pace_reference_analysis):
+    for path in (args.srt, args.speech_timeline, args.caption_review, args.broll_plan, args.approved_asset_plan, args.approved_visual_treatment_plan, args.approved_effect_visual_review, args.effect_review_video, args.approved_filter_plan, args.approved_sticker_plan, args.approved_caption_plan, args.speaker_pip_visual_decisions, args.pace_reference_analysis):
         if path and not path.is_file():
             raise FileNotFoundError(path)
     if args.exported_video and not args.exported_video.is_file():
@@ -354,12 +359,30 @@ def main() -> int:
     catalog_json = args.output_dir / "asset_catalog.json"
     run([sys.executable, str(skills["jianying-asset-director"] / "scripts" / "asset_director.py"), "catalog", "--output", str(catalog_json)])
     asset_plan = None
+    visual_treatment_template = None
+    visual_treatment_validation = None
     if args.beats:
-        asset_plan = args.output_dir / "asset_plan.json"
-        run([
-            sys.executable, str(skills["jianying-asset-director"] / "scripts" / "asset_director.py"), "plan",
-            "--beats", str(args.beats), "--catalog", str(catalog_json), "--style", args.style, "--output", str(asset_plan),
-        ])
+        visual_treatment_template = args.output_dir / "visual_treatment_plan.template.json"
+        treatment_template_command = [
+            sys.executable, str(skills["jianying-asset-director"] / "scripts" / "visual_treatment_director.py"), "template",
+            "--beats", str(args.beats.resolve()), "--output", str(visual_treatment_template),
+        ]
+        if args.broll_plan:
+            treatment_template_command.extend(["--broll-plan", str(args.broll_plan.resolve())])
+        run(treatment_template_command)
+        if args.approved_visual_treatment_plan:
+            visual_treatment_validation = args.output_dir / "visual_treatment_plan.qc.json"
+            run([
+                sys.executable, str(skills["jianying-asset-director"] / "scripts" / "visual_treatment_director.py"), "validate",
+                "--plan", str(args.approved_visual_treatment_plan.resolve()), "--beats", str(args.beats.resolve()),
+                "--output", str(visual_treatment_validation),
+            ])
+            asset_plan = args.output_dir / "asset_plan.json"
+            run([
+                sys.executable, str(skills["jianying-asset-director"] / "scripts" / "asset_director.py"), "plan",
+                "--beats", str(args.beats), "--catalog", str(catalog_json), "--style", args.style,
+                "--visual-treatments", str(args.approved_visual_treatment_plan.resolve()), "--output", str(asset_plan),
+            ])
 
     finish_catalog = None
     filter_plan_template = None
@@ -388,6 +411,7 @@ def main() -> int:
     caption_layout_review = None
     caption_plan_template = None
     caption_plan_validation = None
+    asset_post_assembly_validation = None
     if args.prepare_speaker_pip or args.prepare_caption_design or args.materialize_draft:
         if len(speech_sources) != 1:
             raise RuntimeError("SpeakerPiP and frame-reviewed caption design currently require exactly one narration source")
@@ -470,6 +494,21 @@ def main() -> int:
         if not isinstance(assembly_report, dict) or assembly_report.get("status") != "succeeded":
             raise RuntimeError("draft assembly QC did not pass")
         draft_assembly = assembly_report.get("draft_path")
+        asset_post_assembly_validation = args.output_dir / "asset_plan.post_assembly.qc.json"
+        post_asset_command = [
+            sys.executable, str(skills["jianying-asset-director"] / "scripts" / "asset_director.py"), "validate",
+            "--plan", str(args.approved_asset_plan.resolve()), "--catalog", str(catalog_json),
+            "--draft", str(Path(draft_assembly).resolve()), "--output", str(asset_post_assembly_validation),
+        ]
+        if args.approved_effect_visual_review:
+            post_asset_command.extend([
+                "--visual-review", str(args.approved_effect_visual_review.resolve()),
+                "--review-video", str(args.effect_review_video.resolve()),
+            ])
+        run(post_asset_command)
+        post_asset_report = read_json(asset_post_assembly_validation)
+        if post_asset_report.get("valid") is not True:
+            raise RuntimeError("post-assembly effect structure QC did not pass")
 
     export_audit = None
     if args.exported_video:
@@ -489,8 +528,13 @@ def main() -> int:
         if export_report.get("status") != "succeeded":
             raise RuntimeError("post-export pixel QC did not pass; inspect export_visual_qc.json")
 
+    workflow_status = "succeeded"
+    if args.beats and not args.approved_visual_treatment_plan:
+        workflow_status = "review_required"
+    if args.materialize_draft and read_json(asset_post_assembly_validation).get("workflow_status") == "effect_visual_review_required":
+        workflow_status = "review_required"
     result = {
-        "status": "succeeded",
+        "status": workflow_status,
         "sources": [str(video) for video in videos],
         "analysis": [str(path) for path in analyses],
         "media_intake": str(intake_path),
@@ -517,6 +561,12 @@ def main() -> int:
         "asset_catalog": str(catalog_json),
         "asset_plan": str(asset_plan) if asset_plan else None,
         "asset_plan_qc": str(asset_validation) if args.materialize_draft else None,
+        "asset_plan_post_assembly_qc": str(asset_post_assembly_validation) if asset_post_assembly_validation else None,
+        "visual_treatment_plan_template": str(visual_treatment_template) if visual_treatment_template else None,
+        "approved_visual_treatment_plan": str(args.approved_visual_treatment_plan.resolve()) if args.approved_visual_treatment_plan else None,
+        "visual_treatment_plan_qc": str(visual_treatment_validation) if visual_treatment_validation else None,
+        "effect_visual_review": str(args.approved_effect_visual_review.resolve()) if args.approved_effect_visual_review else None,
+        "effect_review_video": str(args.effect_review_video.resolve()) if args.effect_review_video else None,
         "visual_finish_catalog": str(finish_catalog) if finish_catalog else None,
         "filter_plan_template": str(filter_plan_template) if filter_plan_template else None,
         "sticker_plan_template": str(sticker_plan_template) if sticker_plan_template else None,
@@ -534,7 +584,7 @@ def main() -> int:
         "speaker_pip_visual_decisions": str(args.speaker_pip_visual_decisions.resolve()) if args.speaker_pip_visual_decisions else None,
         "exported_video": str(args.exported_video.resolve()) if args.exported_video else None,
         "export_audit": str(export_audit) if export_audit else None,
-        "next_step": "Review effect, filter, sticker, SpeakerPiP, and caption-plan artifacts. Inspect every caption representative frame, approve semantic roles/keyword spans/collisions, then rerun with --materialize-draft and all four approved plans; otherwise the thirteen-track skeleton remains unchanged.",
+        "next_step": "Approve the one-treatment-per-beat visual treatment plan first. Then review only the requested effect-family shortlists plus filter, sticker, SpeakerPiP, and caption artifacts. After draft materialization, provide a real JianYing-rendered preview/export and approved per-effect pixel review before final handoff.",
     }
     print("RESULT: " + json.dumps(result, ensure_ascii=False))
     return 0

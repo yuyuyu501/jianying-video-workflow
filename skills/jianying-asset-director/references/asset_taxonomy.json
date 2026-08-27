@@ -1,5 +1,11 @@
 {
-  "version": 3,
+  "version": 4,
+  "visual_treatment_policy": {
+    "priority_purposes": ["warning", "chapter", "correct_action", "time_pressure", "emergency_call"],
+    "allowed": ["none", "broll", "chapter_title", "information_card", "caption_highlight", "sticker", "instructional_illustration", "motion_graphic", "scene_effect", "character_effect"],
+    "one_primary_per_beat": true,
+    "prefer_editorial_composition_over_effect_stacking": true
+  },
   "selection": {
     "visual": {
       "candidate_limit": 15,
@@ -7,8 +13,8 @@
       "max_same_effect_per_plan": 2,
       "repeat_cooldown_seconds": 45.0,
       "allow_no_effect": true,
-      "minimum_selected": 4,
-      "required_purposes": ["warning", "chapter", "correct_action", "time_pressure", "emergency_call"],
+      "minimum_selected": 0,
+      "required_purposes": [],
       "require_visual_evidence": true,
       "require_no_effect_reason": true
     },
@@ -48,14 +54,25 @@
     "标记": "confirmation",
     "箭头": "confirmation",
     "心电": "warning",
-    "警报": "warning"
+    "警报": "warning",
+    "图解": "instructional_illustration",
+    "示意": "instructional_illustration",
+    "医学": "instructional_illustration",
+    "神明": "fantasy",
+    "妖": "fantasy",
+    "魔法": "fantasy",
+    "仙女": "fantasy"
   },
   "style_profiles": {
     "medical_education": {
       "preferred": ["restrained", "documentary", "warning", "confirmation", "scan", "whoosh"],
-      "forbidden": ["cartoon", "comedy", "fireworks", "celebration", "laugh", "explosion"],
+      "forbidden": ["comedy", "fireworks", "celebration", "laugh", "explosion", "fantasy", "person_transformation"],
       "max_visual_intensity": 0.72,
-      "max_audio_intensity": 0.55
+      "max_audio_intensity": 0.55,
+      "max_scene_effects": 8,
+      "max_character_effects": 3,
+      "preferred_visual_treatments": ["broll", "chapter_title", "information_card", "caption_highlight", "instructional_illustration", "motion_graphic"],
+      "character_effect_policy": "sparse_face_specific_only"
     },
     "general_short_video": {
       "preferred": ["impact", "transition", "highlight", "notification"],

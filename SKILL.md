@@ -26,14 +26,16 @@ video-understand (external)
 -> new JianYing draft skeleton + named-track QC, including four dedicated text tracks
 -> representative caption frames + semantic caption-plan template
 -> AI review of role, keyword spans, hierarchy, safe position, and collisions for every caption cue
+-> one-treatment-per-beat visual plan: editorial composition before effect search
 -> jianying-asset-director (bundled)
--> scene-effect/SFX shortlist and AI selection
--> character-effect shortlist and AI selection
+-> scene-effect/SFX shortlist only where the approved treatment requests it
+-> face-intent-gated character-effect shortlist and AI selection
 -> portrait filter/beautification shortlist, frame-grounded selection, and Filters-track QC
 -> content-aware sticker shortlist, placement/collision review, and Stickers-track QC
 -> jianying-editor (external)
 -> materialize silent visual, filters, narration, B-roll, optional PiP, effects, stickers, rich-text captions, highlights, cards, and optional disclaimer on the named tracks
 -> per-stage and post-build composition QC
+-> mandatory JianYing-rendered per-effect pixel review before final success
 -> optional user-exported MP4 pixel QC (black frames, audio stream, subtitle timing, PiP face/circle render, OCR native-text review)
 ```
 
@@ -185,19 +187,30 @@ interpreter running the workflow lacks `jianying-editor` dependencies. The
 selected interpreter is used only for draft-library construction; it never
 launches JianYing or exports a video.
 
-The asset director then searches the whole local library but exposes only
-constrained shortlists per beat to the AI. Scene effects, sound effects, and
-person/face effects are separate decisions. Person effects are considered only
-for beats with a visible face and no full-height B-roll. The AI must return a
-structured decision for every beat: representative-frame timestamp, concrete
-visual observation, selected shortlist ID or a specific no-effect reason, and
-caption/PiP collision risk. For medical education, warning, chapter,
-time-pressure, emergency-call, and correct-action beats with viable candidates
-require scene-effect coverage; an all-empty `Effects` plan fails before draft
-assembly. Character effects and SpeakerPiP remain conditional: no safe
-visible-person candidate is a valid reason for an empty optional track. Code
-validates resource IDs, creative coverage, evidence fields, repetition limits,
-cooldown, effect type, and eligibility before anything is materialized.
+Before the asset director searches the library, run the visual-treatment stage.
+Every final-timeline beat must receive exactly one approved primary treatment:
+`none`, B-roll, chapter title, information card, caption highlight, sticker,
+instructional illustration, motion graphic, scene effect, or character effect.
+Representative-frame evidence is mandatory. Existing B-roll, title, caption,
+card, and sticker emphasis counts; an important beat does not automatically
+require a JianYing effect.
+
+The asset director then searches the whole local library but exposes scene
+effect candidates only for approved `scene_effect` beats and person-effect
+candidates only for approved `character_effect` beats. Face visibility alone
+does not permit a person effect: the treatment must also state a face-specific
+intent, and no full-height B-roll may hide the speaker. The AI must return the
+effect onset, duration, evidence timestamp, concrete observation, shortlist ID,
+and collision risk. Code rejects timing outside the beat or detached from the
+evidence, excessive reuse, style-budget violations, and scene/person overlap
+without an explicit reviewed layering reason.
+
+The runner exposes this as `--approved-visual-treatment-plan`. A clean run with
+`--beats` first writes `visual_treatment_plan.template.json` and stops with
+`status: review_required`; it does not invent an effect plan before that review.
+After approval, rerun with the approved treatment file to generate the bounded
+effect shortlist. Materialization additionally requires that same approved
+treatment file.
 
 After the video tracks are planned, run `visual_finish_director.py`. It creates
 one `Filters` plan for conservative talking-head beautification/color filtering
@@ -336,17 +349,22 @@ Before handing off the draft, verify:
   `require` mode, an approved visual-decision file must select one safe
   candidate. PiP is allowed to be skipped when no safe candidate exists;
 - JianYing effects and sound effects use validated local-library IDs;
-- every AI selection is constrained to its generated shortlist or an explicit
-  no-effect decision with frame-grounded evidence; the plan passes creative
-  coverage, configured minimum scene-effect count, and repetition limits;
+- `visual_treatment_plan.qc.json` passed: every beat has exactly one approved
+  primary editorial treatment with final-timeline frame evidence;
+- every AI selection is constrained to the shortlist for the requested effect
+  family and preserves its evidence, onset, and duration; effect style budgets,
+  repetition limits, and cross-track overlap rules pass;
 - every effect-track segment references a real `materials.video_effects` entry;
 - `Effects` contains only `video_effect` materials and `CharacterEffects`
   contains only `face_effect` materials;
 - `Stickers` contains only locally verified JianYing sticker resource IDs, and
   every placement has passed frame-grounded face/caption/PiP/native-text/key-
   action collision review before materialization;
-- character-effect segments use `face_target` and never overlap a full-height
-  B-roll beat;
+- character-effect segments use `face_target`, carry an approved face-specific
+  intent, never overlap a full-height B-roll beat, and remain sparse;
+- post-assembly effect validation reports `effect_visual_review_required` until
+  a real JianYing-rendered preview/export is supplied with approved per-effect
+  pixel observations; structural draft JSON alone is not final success;
 - `caption_layout_review.json` must inspect representative rough-cut frames for
   every SRT cue before draft assembly; its safe zone is materialized as the
   subtitle transform and then compared back against the saved draft;

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import importlib.util
 import json
 import os
 import re
@@ -16,6 +17,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 
 DEFAULT_TAXONOMY = Path(__file__).resolve().parents[1] / "references" / "asset_taxonomy.json"
+EFFECT_TREATMENTS = {"scene_effect", "character_effect"}
 
 
 def find_jianying_data_dir() -> Path:
@@ -312,6 +314,10 @@ def selection_rules(taxonomy: Dict[str, Any], asset_type: str) -> Dict[str, Any]
 
 def requires_selection(beat: Dict[str, Any], asset_type: str, rules: Dict[str, Any]) -> bool:
     """Whether a creative decision must materialize an asset for this beat."""
+    treatments = set(beat.get("approved_effect_treatments", []))
+    if "visual_treatment" in beat:
+        expected = "scene_effect" if asset_type == "visual" else "character_effect"
+        return asset_type in ("visual", "character") and expected in treatments
     return asset_type == "visual" and str(beat.get("purpose", "general")) in {
         str(value) for value in rules.get("required_purposes", [])
     }
@@ -321,6 +327,10 @@ def visual_evidence_problem(selection: Dict[str, Any], asset_type: str, beat: Di
     """Require an observation grounded in a representative frame."""
     if asset_type not in ("visual", "character") or not rules.get("require_visual_evidence", False):
         return ""
+    if "visual_treatment" in beat:
+        expected = "scene_effect" if asset_type == "visual" else "character_effect"
+        if expected not in set(beat.get("approved_effect_treatments", [])):
+            return ""
     evidence = str(selection.get(f"{asset_type}_evidence", "")).strip()
     try:
         evidence_time = float(selection.get(f"{asset_type}_evidence_time"))
@@ -338,10 +348,11 @@ def creative_coverage_problems(data: Dict[str, Any], taxonomy: Dict[str, Any]) -
     problems: List[str] = []
     rules = selection_rules(taxonomy, "visual")
     decisions = {str(item.get("beat_id")): item for item in data.get("decisions", []) if isinstance(item, dict)}
+    treatment_driven = bool(data.get("visual_treatment_plan"))
     opportunities = [beat for beat in data.get("beats", []) if beat.get("visual_candidates")]
     minimum = min(max(0, int(rules.get("minimum_selected", 0))), len(opportunities))
     selected_count = len(data.get("visual_effects", []))
-    if selected_count < minimum:
+    if not treatment_driven and selected_count < minimum:
         problems.append(f"visual-effect coverage below minimum: selected {selected_count}, required {minimum}")
     for beat in opportunities:
         decision = decisions.get(str(beat.get("beat_id")), {})
@@ -461,8 +472,35 @@ def character_effect_eligibility(beat: Dict[str, Any]) -> Tuple[bool, str]:
     return False, "no confirmed visible person or face"
 
 
-def plan(beats_path: Path, catalog_path: Path, taxonomy_path: Path, style_name: str) -> Dict[str, Any]:
+def load_visual_treatments(path: Path | None, beats: List[Dict[str, Any]]) -> Tuple[Dict[str, Dict[str, Any]], Dict[str, Any] | None]:
+    if path is None:
+        return {}, None
+    module_path = Path(__file__).resolve().with_name("visual_treatment_director.py")
+    spec = importlib.util.spec_from_file_location("jianying_visual_treatment_director", module_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("visual treatment validator is unavailable")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    payload = load_json(path)
+    report = module.validate_payload(payload, beats)
+    if not report.get("valid"):
+        raise ValueError("invalid visual treatment plan: " + "; ".join(report.get("problems", [])))
+    return {
+        str(item["beat_id"]): item
+        for item in payload.get("treatments", [])
+        if isinstance(item, dict) and item.get("beat_id") is not None
+    }, {"source": str(path), "status": "approved", "review": report}
+
+
+def plan(
+    beats_path: Path,
+    catalog_path: Path,
+    taxonomy_path: Path,
+    style_name: str,
+    visual_treatments_path: Path | None = None,
+) -> Dict[str, Any]:
     beats = beat_list(load_json(beats_path))
+    visual_treatments, treatment_record = load_visual_treatments(visual_treatments_path, beats)
     cat = load_json(catalog_path)
     taxonomy = load_json(taxonomy_path)
     style = taxonomy.get("style_profiles", {}).get(style_name, taxonomy.get("style_profiles", {}).get("general_short_video", {}))
@@ -477,10 +515,24 @@ def plan(beats_path: Path, catalog_path: Path, taxonomy_path: Path, style_name: 
     character_rules = selection_rules(taxonomy, "character")
     for beat in beats:
         purpose = beat["purpose"]
-        ranked_visual = rank_candidates(visual_assets, purpose, style, taxonomy, "visual")
+        treatment = visual_treatments.get(str(beat["beat_id"]))
+        approved_effect_treatments = set()
+        if treatment:
+            approved_effect_treatments = {
+                treatment.get("primary_treatment"), treatment.get("secondary_treatment")
+            } & EFFECT_TREATMENTS
+            beat["visual_treatment"] = treatment
+            beat["approved_effect_treatments"] = sorted(approved_effect_treatments)
+        allow_scene = not treatment_record or "scene_effect" in approved_effect_treatments
+        allow_character = not treatment_record or "character_effect" in approved_effect_treatments
+        ranked_visual = rank_candidates(visual_assets, purpose, style, taxonomy, "visual") if allow_scene else []
         ranked_sound = rank_candidates(sound_assets, purpose, style, taxonomy, "sound")
         character_allowed, character_reason = character_effect_eligibility(beat)
-        ranked_character = rank_candidates(character_assets, purpose, style, taxonomy, "character") if character_allowed else []
+        if not allow_character:
+            character_allowed, character_reason = False, "approved visual treatment does not request a character effect"
+        if allow_character and treatment and not treatment.get("character_intent"):
+            character_allowed, character_reason = False, "visual treatment lacks face-specific character_intent"
+        ranked_character = rank_candidates(character_assets, purpose, style, taxonomy, "character") if character_allowed and allow_character else []
         visual_shortlist = shortlist_candidates(
             ranked_visual, purpose, style, taxonomy, int(visual_rules["candidate_limit"])
         )
@@ -516,7 +568,7 @@ def plan(beats_path: Path, catalog_path: Path, taxonomy_path: Path, style_name: 
             "character_status": "awaiting_ai_review" if character_allowed else "ineligible_no_effect",
         })
     return {
-        "version": 3,
+        "version": 4,
         "style": style_name,
         "selection": {"visual": visual_rules, "sound": sound_rules, "character": character_rules},
         "beats": beats,
@@ -524,6 +576,7 @@ def plan(beats_path: Path, catalog_path: Path, taxonomy_path: Path, style_name: 
         "sound_effects": sound_plan,
         "character_effects": [],
         "decisions": decisions,
+        "visual_treatment_plan": treatment_record,
         "rejected": [],
         "preview_required": True,
         "ai_review": {"required": True, "mode": "choose_from_shortlist_or_no_effect", "status": "pending"},
@@ -536,21 +589,33 @@ def selected_item(
     candidate: Dict[str, Any],
     asset_type: str,
     taxonomy: Dict[str, Any],
+    selection: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
     purpose_rule = taxonomy.get("beat_purposes", {}).get(beat["purpose"], {})
     max_duration = float(purpose_rule.get("max_duration", 1.2))
+    selection = selection or {}
+    start = float(selection.get(f"{asset_type}_effect_start", beat["start"]))
     item = {
         "asset_id": candidate["asset_id"],
         "name": candidate["name"],
-        "start": beat["start"],
+        "start": start,
         "score": candidate["score"],
         "reasons": candidate["reasons"],
         "beat_id": beat["beat_id"],
         "selection_source": "ai_shortlist_review",
     }
     if asset_type in ("visual", "character"):
-        item["duration"] = min(max_duration, max(0.4, beat["end"] - beat["start"]))
+        default_duration = min(max_duration, max(0.1, beat["end"] - start))
+        item["duration"] = float(selection.get(f"{asset_type}_effect_duration", default_duration))
         item["zone"] = beat.get("effect_zone", "full_frame") if asset_type == "visual" else "face_target"
+        item["evidence_time"] = selection.get(f"{asset_type}_evidence_time")
+        item["evidence"] = str(selection.get(f"{asset_type}_evidence", "")).strip()
+        item["treatment"] = "scene_effect" if asset_type == "visual" else "character_effect"
+        if asset_type == "character":
+            item["character_intent"] = beat.get("visual_treatment", {}).get("character_intent")
+        layering_reason = str(beat.get("visual_treatment", {}).get("layering_reason", "")).strip()
+        if layering_reason:
+            item["layering_reason"] = layering_reason
     else:
         track = str(beat.get("sound_track", "SFX"))
         if track != "SFX":
@@ -613,7 +678,13 @@ def apply_selections(plan_path: Path, selections_path: Path, taxonomy_path: Path
                 if not rules["allow_no_effect"]:
                     raise ValueError(f"{asset_type} selection is required for beat: {beat_id}")
                 no_effect_reason = str(selection.get(f"{asset_type}_no_effect_reason", "")).strip()
-                if candidates and rules.get("require_no_effect_reason", False) and len(no_effect_reason) < 8:
+                treatment_does_not_request_effect = (
+                    "visual_treatment" in beat
+                    and asset_type in ("visual", "character")
+                    and ("scene_effect" if asset_type == "visual" else "character_effect")
+                    not in set(beat.get("approved_effect_treatments", []))
+                )
+                if candidates and rules.get("require_no_effect_reason", False) and not treatment_does_not_request_effect and len(no_effect_reason) < 8:
                     raise ValueError(f"{asset_type} no-effect decision requires a grounded reason for beat: {beat_id}")
                 decision[f"{asset_type}_selected"] = None
                 decision[f"{asset_type}_status"] = "no_effect"
@@ -630,7 +701,15 @@ def apply_selections(plan_path: Path, selections_path: Path, taxonomy_path: Path
             problem = diversity_problem(str(selected_id), float(beat["start"]), history, rules, asset_type)
             if problem:
                 raise ValueError(problem)
-            item = selected_item(beat, candidates[selected_id], asset_type, taxonomy)
+            item = selected_item(beat, candidates[selected_id], asset_type, taxonomy, selection)
+            if asset_type in ("visual", "character"):
+                item_start = float(item["start"])
+                item_end = item_start + float(item["duration"])
+                if item_start < float(beat["start"]) or item_end > float(beat["end"]) + 0.001:
+                    raise ValueError(f"{asset_type} effect timing is outside beat {beat_id}")
+                evidence_time = float(selection.get(f"{asset_type}_evidence_time", item_start))
+                if not item_start - 0.25 <= evidence_time <= item_end + 0.25:
+                    raise ValueError(f"{asset_type} effect timing does not align with evidence for beat {beat_id}")
             output.append(item)
             decision[f"{asset_type}_selected"] = selected_id
             decision[f"{asset_type}_status"] = "selected"
@@ -650,10 +729,35 @@ def apply_selections(plan_path: Path, selections_path: Path, taxonomy_path: Path
         "selection_source": str(selections_path),
     }
     data["validation"] = {"status": "pending"}
+    style = taxonomy.get("style_profiles", {}).get(data.get("style"), {})
+    if len(visual_effects) > int(style.get("max_scene_effects", 10**9)):
+        raise ValueError("scene-effect style budget exceeded")
+    if len(character_effects) > int(style.get("max_character_effects", 10**9)):
+        raise ValueError("character-effect style budget exceeded")
+    overlap_problems = effect_overlap_problems(data)
+    if overlap_problems:
+        raise ValueError("; ".join(overlap_problems))
     coverage_problems = creative_coverage_problems(data, taxonomy)
     if coverage_problems:
         raise ValueError("; ".join(coverage_problems))
     return data
+
+
+def timeline_overlap(left: Dict[str, Any], right: Dict[str, Any]) -> float:
+    return min(float(left["start"]) + float(left["duration"]), float(right["start"]) + float(right["duration"])) - max(float(left["start"]), float(right["start"]))
+
+
+def effect_overlap_problems(data: Dict[str, Any]) -> List[str]:
+    problems: List[str] = []
+    for scene in data.get("visual_effects", []):
+        for character in data.get("character_effects", []):
+            if timeline_overlap(scene, character) > 0.01:
+                reason = str(scene.get("layering_reason") or character.get("layering_reason") or "").strip()
+                if len(reason) < 12:
+                    problems.append(
+                        f"scene and character effects overlap without reviewed layering_reason: {scene.get('beat_id')}/{character.get('beat_id')}"
+                    )
+    return problems
 
 
 def composition_qc(data: Dict[str, Any], document: Dict[str, Any]) -> Dict[str, Any]:
@@ -703,7 +807,77 @@ def composition_qc(data: Dict[str, Any], document: Dict[str, Any]) -> Dict[str, 
     }
 
 
-def validate(plan_path: Path, draft_path: Path | None, catalog_path: Path | None = None, taxonomy_path: Path = DEFAULT_TAXONOMY) -> Dict[str, Any]:
+def effect_visual_review(
+    data: Dict[str, Any],
+    review_path: Path | None,
+    review_video: Path | None,
+) -> Dict[str, Any]:
+    selected = data.get("visual_effects", []) + data.get("character_effects", [])
+    if not selected:
+        return {"status": "not_required", "approved": True, "problems": []}
+    if review_path is None or review_video is None:
+        return {
+            "status": "effect_visual_review_required",
+            "approved": False,
+            "problems": ["a real JianYing-rendered preview/export and approved effect visual review are required"],
+        }
+    problems: List[str] = []
+    if not review_video.is_file():
+        problems.append(f"effect review video not found: {review_video}")
+    payload = load_json(review_path)
+    if not isinstance(payload, dict) or payload.get("status") != "approved":
+        problems.append("effect visual review status must be approved")
+        payload = payload if isinstance(payload, dict) else {}
+    recorded_video = str(payload.get("rendered_video", "")).strip()
+    if not recorded_video:
+        problems.append("effect visual review must record rendered_video")
+    else:
+        try:
+            if Path(recorded_video).resolve() != review_video.resolve():
+                problems.append("effect visual review rendered_video does not match supplied review video")
+        except OSError:
+            problems.append("effect visual review rendered_video is invalid")
+    reviews = payload.get("effects", [])
+    if not isinstance(reviews, list):
+        reviews = []
+        problems.append("effect visual review requires effects array")
+    by_key = {
+        (str(item.get("beat_id")), str(item.get("asset_id"))): item
+        for item in reviews if isinstance(item, dict)
+    }
+    for item in selected:
+        key = (str(item.get("beat_id")), str(item.get("asset_id")))
+        review = by_key.get(key)
+        if review is None:
+            problems.append(f"missing rendered visual review for effect {key[0]}/{key[1]}")
+            continue
+        if review.get("status") != "approved":
+            problems.append(f"effect visual review is not approved for {key[0]}/{key[1]}")
+        evidence = str(review.get("pixel_observation", "")).strip()
+        if len(evidence) < 12:
+            problems.append(f"effect visual review lacks concrete pixel observation for {key[0]}/{key[1]}")
+        for field in ("effect_visible", "captions_readable", "face_unobstructed", "style_appropriate"):
+            if review.get(field) is not True:
+                problems.append(f"effect visual review failed {field} for {key[0]}/{key[1]}")
+        if review.get("excessive_flash_or_glitch") is not False:
+            problems.append(f"effect visual review must reject excessive flash/glitch for {key[0]}/{key[1]}")
+    return {
+        "status": "effect_visual_approved" if not problems else "effect_visual_review_required",
+        "approved": not problems,
+        "review": str(review_path),
+        "rendered_video": str(review_video),
+        "problems": problems,
+    }
+
+
+def validate(
+    plan_path: Path,
+    draft_path: Path | None,
+    catalog_path: Path | None = None,
+    taxonomy_path: Path = DEFAULT_TAXONOMY,
+    visual_review_path: Path | None = None,
+    review_video_path: Path | None = None,
+) -> Dict[str, Any]:
     data = load_json(plan_path)
     problems: List[str] = []
     taxonomy = load_json(taxonomy_path)
@@ -727,11 +901,29 @@ def validate(plan_path: Path, draft_path: Path | None, catalog_path: Path | None
             problems.append(f"effect asset_id must equal resource_id: {item.get('asset_id')}")
         if not item.get("source_identifier"):
             problems.append(f"effect lacks source_identifier: {item.get('asset_id')}")
+        beat = next((beat for beat in data.get("beats", []) if str(beat.get("beat_id")) == str(item.get("beat_id"))), None)
+        if beat is None:
+            problems.append(f"effect references unknown beat: {item.get('beat_id')}")
+        else:
+            start = float(item.get("start", 0))
+            end = start + float(item.get("duration", 0))
+            if start < float(beat["start"]) or end > float(beat["end"]) + 0.001:
+                problems.append(f"effect timing is outside beat: {item.get('asset_id')}")
+        if (data.get("visual_treatment_plan") or visual_rules.get("require_visual_evidence")) and len(str(item.get("evidence", "")).strip()) < 8:
+            problems.append(f"effect lacks preserved frame evidence: {item.get('asset_id')}")
     for item in data.get("character_effects", []):
         beat = next((beat for beat in data.get("beats", []) if str(beat.get("beat_id")) == str(item.get("beat_id"))), {})
         eligible, reason = character_effect_eligibility(beat)
         if not eligible:
             problems.append(f"character effect uses ineligible beat {item.get('beat_id')}: {reason}")
+        if data.get("visual_treatment_plan") and not item.get("character_intent"):
+            problems.append(f"character effect lacks approved character_intent: {item.get('asset_id')}")
+    problems.extend(effect_overlap_problems(data))
+    style = taxonomy.get("style_profiles", {}).get(data.get("style"), {})
+    if len(data.get("visual_effects", [])) > int(style.get("max_scene_effects", 10**9)):
+        problems.append("scene-effect style budget exceeded")
+    if len(data.get("character_effects", [])) > int(style.get("max_character_effects", 10**9)):
+        problems.append("character-effect style budget exceeded")
     for asset_type, rules, key in (("visual", visual_rules, "visual_effects"), ("sound", sound_rules, "sound_effects"), ("character", character_rules, "character_effects")):
         items = data.get(key, [])
         counts = Counter(item.get("asset_id") for item in items)
@@ -762,7 +954,29 @@ def validate(plan_path: Path, draft_path: Path | None, catalog_path: Path | None
                 problems.append("draft references generated_sfx")
             qc_report = composition_qc(data, json.loads(raw))
             problems.extend(qc_report["problems"])
-    return {"valid": not problems, "problems": problems, "draft": draft_report, "composition_qc": qc_report}
+    structural_valid = not problems
+    review_report = effect_visual_review(data, visual_review_path, review_video_path) if draft_path and structural_valid else {
+        "status": "not_evaluated" if not draft_path else "structural_qc_failed",
+        "approved": False,
+        "problems": [],
+    }
+    if not structural_valid:
+        workflow_status = "structural_failed"
+    elif draft_path and review_report.get("approved"):
+        workflow_status = "effect_visual_approved"
+    elif draft_path:
+        workflow_status = "effect_visual_review_required"
+    else:
+        workflow_status = "structural_passed"
+    return {
+        "valid": structural_valid,
+        "final_approved": workflow_status == "effect_visual_approved",
+        "workflow_status": workflow_status,
+        "problems": problems,
+        "draft": draft_report,
+        "composition_qc": qc_report,
+        "effect_visual_review": review_report,
+    }
 
 
 def preview(video_path: Path, plan_path: Path, output_dir: Path) -> Dict[str, Any]:
@@ -770,13 +984,15 @@ def preview(video_path: Path, plan_path: Path, output_dir: Path) -> Dict[str, An
     if not video_path.exists():
         raise FileNotFoundError(video_path)
     data = load_json(plan_path)
-    beats = beat_list(data.get("beats", []))
+    effects = data.get("visual_effects", []) + data.get("character_effects", [])
     output_dir.mkdir(parents=True, exist_ok=True)
     clips: List[Dict[str, Any]] = []
-    for index, beat in enumerate(beats, start=1):
-        start = max(0.0, beat["start"] - 0.4)
-        duration = min(6.0, max(1.0, beat["end"] - start + 0.8))
-        output = output_dir / f"beat_{index:03d}.mp4"
+    for index, effect in enumerate(effects, start=1):
+        effect_start = float(effect["start"])
+        effect_duration = float(effect["duration"])
+        start = max(0.0, effect_start - 0.5)
+        duration = min(6.0, max(1.2, effect_start + effect_duration + 0.5 - start))
+        output = output_dir / f"effect_{index:03d}.mp4"
         command = [
             "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
             "-ss", f"{start:.3f}", "-i", str(video_path), "-t", f"{duration:.3f}",
@@ -784,7 +1000,13 @@ def preview(video_path: Path, plan_path: Path, output_dir: Path) -> Dict[str, An
             "-c:a", "aac", "-b:a", "96k", str(output),
         ]
         subprocess.run(command, check=True)
-        clips.append({"beat_id": beat["beat_id"], "start": start, "duration": duration, "path": str(output)})
+        clips.append({
+            "beat_id": effect.get("beat_id"), "asset_id": effect.get("asset_id"),
+            "effect_start": effect_start, "effect_duration": effect_duration,
+            "review_window_start": start, "review_window_duration": duration,
+            "phases": {"pre": effect_start - start, "during": effect_duration, "post": 0.5},
+            "path": str(output),
+        })
     manifest = output_dir / "manifest.json"
     manifest.write_text(json.dumps({"video": str(video_path), "clips": clips}, ensure_ascii=False, indent=2), encoding="utf-8")
     return {"output_dir": str(output_dir), "clip_count": len(clips), "manifest": str(manifest)}
@@ -807,6 +1029,7 @@ def main() -> int:
     p_plan.add_argument("--catalog", type=Path, required=True)
     p_plan.add_argument("--taxonomy", type=Path, default=DEFAULT_TAXONOMY)
     p_plan.add_argument("--style", default="medical_education")
+    p_plan.add_argument("--visual-treatments", type=Path, help="Approved visual-treatment plan; only requested effect families receive candidates")
     p_plan.add_argument("--output", type=Path, required=True)
     p_select = sub.add_parser("select", help="apply AI selections constrained to a plan's candidate shortlists")
     p_select.add_argument("--plan", type=Path, required=True)
@@ -818,6 +1041,8 @@ def main() -> int:
     p_validate.add_argument("--draft", type=Path)
     p_validate.add_argument("--catalog", type=Path)
     p_validate.add_argument("--taxonomy", type=Path, default=DEFAULT_TAXONOMY)
+    p_validate.add_argument("--visual-review", type=Path, help="Approved per-effect pixel review of a real JianYing render")
+    p_validate.add_argument("--review-video", type=Path, help="Real JianYing-rendered preview/export inspected by --visual-review")
     p_validate.add_argument("--output", type=Path, help="Optional JSON report path for the validation gate")
     p_preview = sub.add_parser("preview")
     p_preview.add_argument("--video", type=Path, required=True)
@@ -831,7 +1056,7 @@ def main() -> int:
             args.output.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
             emit("succeeded", args.command, {"output": str(args.output), "asset_count": result["asset_count"]})
         elif args.command == "plan":
-            result = plan(args.beats, args.catalog, args.taxonomy, args.style)
+            result = plan(args.beats, args.catalog, args.taxonomy, args.style, args.visual_treatments)
             args.output.parent.mkdir(parents=True, exist_ok=True)
             args.output.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
             emit("succeeded", args.command, {
@@ -844,7 +1069,7 @@ def main() -> int:
                 "rejected_count": len(result["rejected"]),
             })
         elif args.command == "validate":
-            result = validate(args.plan, args.draft, args.catalog, args.taxonomy)
+            result = validate(args.plan, args.draft, args.catalog, args.taxonomy, args.visual_review, args.review_video)
             if args.output:
                 args.output.parent.mkdir(parents=True, exist_ok=True)
                 args.output.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

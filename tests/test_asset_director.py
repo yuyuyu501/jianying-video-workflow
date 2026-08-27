@@ -189,8 +189,8 @@ class AssetDirectorTests(unittest.TestCase):
     def test_composition_qc_separates_scene_and_face_materials(self):
         data = {
             "beats": [{"beat_id": "one", "start": 0, "end": 1, "purpose": "warning", "person_visible": True}],
-            "visual_effects": [{"asset_id": "scene", "resource_id": "scene", "source_identifier": "故障A", "start": 0, "duration": 0.5, "beat_id": "one"}],
-            "character_effects": [{"asset_id": "face", "resource_id": "face", "source_identifier": "高光人物", "start": 0, "duration": 0.5, "zone": "face_target", "beat_id": "one"}],
+            "visual_effects": [{"asset_id": "scene", "resource_id": "scene", "source_identifier": "故障A", "start": 0, "duration": 0.5, "beat_id": "one", "layering_reason": "Reviewed complementary face and frame accents."}],
+            "character_effects": [{"asset_id": "face", "resource_id": "face", "source_identifier": "高光人物", "start": 0, "duration": 0.5, "zone": "face_target", "beat_id": "one", "layering_reason": "Reviewed complementary face and frame accents."}],
         }
         document = {
             "materials": {"video_effects": [
@@ -204,6 +204,78 @@ class AssetDirectorTests(unittest.TestCase):
         }
         report = asset_director.composition_qc(data, document)
         self.assertTrue(report["passed"], report["problems"])
+
+    def test_editorial_treatment_satisfies_priority_beat_without_effect_candidates(self):
+        with tempfile.TemporaryDirectory() as directory:
+            taxonomy_data = json.loads(json.dumps(TAXONOMY))
+            taxonomy_data["selection"]["visual"]["required_purposes"] = ["warning"]
+            taxonomy = self.write_json(directory, "taxonomy.json", taxonomy_data)
+            catalog = self.write_json(directory, "catalog.json", {"assets": [asset("scene", "故障A", ["warning"])]})
+            beats = self.write_json(directory, "beats.json", {"beats": [{"beat_id": "one", "start": 0, "end": 1, "purpose": "warning"}]})
+            treatments = self.write_json(directory, "treatments.json", {"treatments": [{
+                "beat_id": "one", "primary_treatment": "chapter_title", "secondary_treatment": None,
+                "review_status": "approved", "visual_evidence_time": 0.5,
+                "visual_evidence": "The clean center frame has room for a chapter title.",
+                "layering_reason": "", "character_intent": None,
+            }]})
+            output = asset_director.plan(beats, catalog, taxonomy, "medical_education", treatments)
+            self.assertEqual(output["beats"][0]["visual_candidates"], [])
+            selected = self.write_json(directory, "selected.json", {"selections": [{
+                "beat_id": "one", "visual_asset_id": None, "sound_asset_id": None,
+            }]})
+            result = asset_director.apply_selections(self.write_json(directory, "plan.json", output), selected, taxonomy)
+            self.assertEqual(result["visual_effects"], [])
+
+    def test_selected_effect_preserves_evidence_and_ai_timing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            taxonomy = self.write_json(directory, "taxonomy.json", TAXONOMY)
+            catalog = self.write_json(directory, "catalog.json", {"assets": [asset("scene", "故障A", ["warning"])]})
+            beats = self.write_json(directory, "beats.json", {"beats": [{"beat_id": "one", "start": 10, "end": 12, "purpose": "warning"}]})
+            treatments = self.write_json(directory, "treatments.json", {"treatments": [{
+                "beat_id": "one", "primary_treatment": "scene_effect", "secondary_treatment": None,
+                "review_status": "approved", "visual_evidence_time": 10.8,
+                "visual_evidence": "The warning phrase begins while the speaker remains unobscured.",
+                "layering_reason": "", "character_intent": None,
+            }]})
+            candidate = asset_director.plan(beats, catalog, taxonomy, "medical_education", treatments)
+            selections = self.write_json(directory, "selected.json", {"selections": [{
+                "beat_id": "one", "visual_asset_id": "scene", "sound_asset_id": None,
+                "visual_effect_start": 10.7, "visual_effect_duration": 0.6,
+                "visual_evidence_time": 10.8,
+                "visual_evidence": "The warning phrase begins while the speaker remains unobscured.",
+            }]})
+            result = asset_director.apply_selections(self.write_json(directory, "plan.json", candidate), selections, taxonomy)
+            effect = result["visual_effects"][0]
+            self.assertEqual(effect["start"], 10.7)
+            self.assertEqual(effect["duration"], 0.6)
+            self.assertIn("warning phrase", effect["evidence"])
+
+    def test_character_candidates_require_face_specific_treatment_intent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            taxonomy = self.write_json(directory, "taxonomy.json", TAXONOMY)
+            catalog = self.write_json(directory, "catalog.json", {"assets": [character_asset("face", "高光人物", ["person", "warning"])]})
+            beats = self.write_json(directory, "beats.json", {"beats": [{"beat_id": "one", "start": 0, "end": 1, "purpose": "warning", "person_visible": True}]})
+            invalid_treatments = self.write_json(directory, "invalid.json", {"treatments": [{
+                "beat_id": "one", "primary_treatment": "character_effect", "secondary_treatment": None,
+                "review_status": "approved", "visual_evidence_time": 0.5,
+                "visual_evidence": "The speaker face is visible in the unobstructed center frame.",
+                "layering_reason": "", "character_intent": None,
+            }]})
+            with self.assertRaisesRegex(ValueError, "face-specific intent"):
+                asset_director.plan(beats, catalog, taxonomy, "medical_education", invalid_treatments)
+
+    def test_scene_character_overlap_requires_reviewed_layering_reason(self):
+        data = {
+            "visual_effects": [{"start": 1, "duration": 1, "beat_id": "one"}],
+            "character_effects": [{"start": 1.5, "duration": 1, "beat_id": "one"}],
+        }
+        self.assertIn("overlap", asset_director.effect_overlap_problems(data)[0])
+
+    def test_effect_visual_review_is_required_after_materialization(self):
+        data = {"visual_effects": [{"beat_id": "one", "asset_id": "scene"}], "character_effects": []}
+        report = asset_director.effect_visual_review(data, None, None)
+        self.assertEqual(report["status"], "effect_visual_review_required")
+        self.assertFalse(report["approved"])
 
 
 if __name__ == "__main__":
