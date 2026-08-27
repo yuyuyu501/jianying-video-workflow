@@ -21,6 +21,14 @@ from validate_draft_skeleton import validate as validate_skeleton
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def configure_console_output() -> None:
+    """Keep editor-library status output from failing on Windows GBK consoles."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(encoding="utf-8", errors="backslashreplace")
+
+
 def locate_editor_skill() -> Path:
     configured = os.environ.get("JY_SKILL_ROOT", "").strip()
     candidates = [Path(configured)] if configured else []
@@ -183,6 +191,7 @@ def materialize_effects(project, draft, asset_plan: dict) -> tuple[int, int]:
 
 
 def main() -> int:
+    configure_console_output()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--draft-name", required=True)
     parser.add_argument("--drafts-root", type=Path)

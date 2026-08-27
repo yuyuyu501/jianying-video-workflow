@@ -230,14 +230,20 @@ def write_candidate_previews(
 
 
 def apply_visual_decisions(review: dict, plan: dict, decisions: dict[int, dict], mode: str) -> None:
-    """Let visual review approve, move, or reject only machine-safe candidates."""
+    """Let visual review approve, move, or reject only machine-safe candidates.
+
+    Face detection and caption/title collision checks are only a candidate
+    generator. They cannot determine whether a B-roll's medical diagram,
+    product, or action is the information that must remain visible. Therefore
+    no requested PiP may reach draft assembly until a visual decision explicitly
+    approves one candidate.
+    """
     for finding in review.get("pip_reviews", []):
         decision = decisions.get(int(finding["segment_index"]))
         if decision is None:
-            finding["visual_review_status"] = "not_requested" if mode == "auto" else "missing"
-            if mode == "require":
-                finding["status"] = "rejected"
-                finding["reason"] = "No visual approval was supplied for this requested PiP segment."
+            finding["visual_review_status"] = "missing"
+            finding["status"] = "rejected"
+            finding["reason"] = "No visual approval was supplied for this requested PiP segment."
             continue
         finding["visual_review_status"] = decision["status"]
         finding["visual_review_reason"] = str(decision.get("reason", ""))

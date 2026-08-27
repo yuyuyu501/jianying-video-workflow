@@ -362,6 +362,14 @@ def main() -> int:
         ] + (["--visual-decisions", str(args.speaker_pip_visual_decisions.resolve())] if args.speaker_pip_visual_decisions else []))
     if args.materialize_draft:
         source_id = str(speech_sources[0]["id"])
+        asset_validation = args.output_dir / "asset_plan.qc.json"
+        run([
+            sys.executable, str(skills["jianying-asset-director"] / "scripts" / "asset_director.py"), "validate",
+            "--plan", str(args.approved_asset_plan.resolve()), "--catalog", str(catalog_json),
+            "--output", str(asset_validation),
+        ])
+        if read_json(asset_validation).get("valid") is not True:
+            raise RuntimeError("asset-plan creative coverage or AI-review QC did not pass")
         draft_assembly_qc = args.output_dir / "draft_assembly.qc.json"
         caption_layout_review = args.output_dir / "caption_layout_review.json"
         run([
@@ -432,6 +440,7 @@ def main() -> int:
         "draft_skeleton_qc": str(skeleton_qc) if skeleton_qc else None,
         "asset_catalog": str(catalog_json),
         "asset_plan": str(asset_plan) if asset_plan else None,
+        "asset_plan_qc": str(asset_validation) if args.materialize_draft else None,
         "draft_assembly": draft_assembly,
         "draft_assembly_qc": str(draft_assembly_qc) if draft_assembly_qc else None,
         "pip_visual_review": str(pip_visual_review) if pip_visual_review else None,

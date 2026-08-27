@@ -169,10 +169,16 @@ launches JianYing or exports a video.
 The asset director then searches the whole local library but exposes only
 constrained shortlists per beat to the AI. Scene effects, sound effects, and
 person/face effects are separate decisions. Person effects are considered only
-for beats with a visible face and no full-height B-roll. The AI must select a
-shortlist ID or explicitly choose no effect; code validates the real resource
-ID, repetition limits, cooldown, effect type, and eligibility before it can be
-materialized on the existing draft tracks.
+for beats with a visible face and no full-height B-roll. The AI must return a
+structured decision for every beat: representative-frame timestamp, concrete
+visual observation, selected shortlist ID or a specific no-effect reason, and
+caption/PiP collision risk. For medical education, warning, chapter,
+time-pressure, emergency-call, and correct-action beats with viable candidates
+require scene-effect coverage; an all-empty `Effects` plan fails before draft
+assembly. Character effects and SpeakerPiP remain conditional: no safe
+visible-person candidate is a valid reason for an empty optional track. Code
+validates resource IDs, creative coverage, evidence fields, repetition limits,
+cooldown, effect type, and eligibility before anything is materialized.
 
 Final SRT entries are generated only from the rendered rough-cut timebase. The
 caption review keeps natural transcript ranges; the caption stage then splits
@@ -215,9 +221,12 @@ python scripts/run_workflow.py `
 
 Run this stage only when full-frame B-roll needs the speaker to remain visibly
 identifiable. No B-roll, one talking-head source, or short assets that do not
-benefit from an identifiable speaker leave `SpeakerPiP` empty. `auto` skips
-unsafe requests, `off` skips the stage, and `require` needs a visual decision
-file that chooses one generated safe candidate.
+benefit from an identifiable speaker leave `SpeakerPiP` empty. Face detection
+and protected zones only generate candidates: every requested PiP also needs
+an approved visual decision after its composite is inspected. Without that
+decision, including in `auto` mode, the PiP is disabled while the B-roll stays
+in the plan. `off` skips the stage; `require` fails rather than silently
+disabling a requested PiP.
 
 ## Draft Handoff Gate
 
@@ -258,7 +267,8 @@ Before handing off the draft, verify:
   candidate. PiP is allowed to be skipped when no safe candidate exists;
 - JianYing effects and sound effects use validated local-library IDs;
 - every AI selection is constrained to its generated shortlist or an explicit
-  no-effect decision, and the plan passes configured repetition limits;
+  no-effect decision with frame-grounded evidence; the plan passes creative
+  coverage, configured minimum scene-effect count, and repetition limits;
 - every effect-track segment references a real `materials.video_effects` entry;
 - `Effects` contains only `video_effect` materials and `CharacterEffects`
   contains only `face_effect` materials;

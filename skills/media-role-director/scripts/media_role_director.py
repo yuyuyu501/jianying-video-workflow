@@ -472,11 +472,20 @@ def split_caption_entry(entry: dict[str, Any], max_chars: int = CAPTION_MAX_CHAR
     if display_caption_text(current):
         chunks.append(display_caption_text(current))
     chunks = [chunk for chunk in chunks if chunk]
-    # A hard character-limit split may leave a lone final character. Keep the
-    # cue readable by moving that tail back to the preceding subtitle.
-    if len(chunks) >= 2 and caption_reading_weight(chunks[-1]) == 1:
-        tail = chunks.pop()
-        chunks[-1] += tail
+    # A hard character-limit split may leave a lone character before a later
+    # punctuation split, not only at the end of the entry (for example,
+    # "...心脏里 / 面，..."). Absorb every such shard into its neighbour.
+    merged_chunks: list[str] = []
+    for index, chunk in enumerate(chunks):
+        if caption_reading_weight(chunk) != 1:
+            merged_chunks.append(chunk)
+        elif merged_chunks:
+            merged_chunks[-1] += chunk
+        elif index + 1 < len(chunks):
+            chunks[index + 1] = chunk + chunks[index + 1]
+        else:
+            merged_chunks.append(chunk)
+    chunks = merged_chunks
     if len(chunks) == 1:
         return [{**entry, "start": round(start, 3), "end": round(end, 3), "text": chunks[0]}]
 

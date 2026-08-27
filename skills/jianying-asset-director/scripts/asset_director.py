@@ -298,10 +298,63 @@ def selection_rules(taxonomy: Dict[str, Any], asset_type: str) -> Dict[str, Any]
         "max_same_effect_per_plan": 1 if asset_type == "character" else 2,
         "repeat_cooldown_seconds": 90.0 if asset_type == "character" else 45.0,
         "allow_no_effect": True,
+        # Production taxonomies opt into these gates. The defaults preserve
+        # deliberately plain edits that use this helper outside the workflow.
+        "minimum_selected": 0,
+        "required_purposes": [],
+        "require_visual_evidence": False,
+        "require_no_effect_reason": False,
     }
     rules = dict(defaults)
     rules.update(selection.get(asset_type, {}))
     return rules
+
+
+def requires_selection(beat: Dict[str, Any], asset_type: str, rules: Dict[str, Any]) -> bool:
+    """Whether a creative decision must materialize an asset for this beat."""
+    return asset_type == "visual" and str(beat.get("purpose", "general")) in {
+        str(value) for value in rules.get("required_purposes", [])
+    }
+
+
+def visual_evidence_problem(selection: Dict[str, Any], asset_type: str, beat: Dict[str, Any], rules: Dict[str, Any]) -> str:
+    """Require an observation grounded in a representative frame."""
+    if asset_type not in ("visual", "character") or not rules.get("require_visual_evidence", False):
+        return ""
+    evidence = str(selection.get(f"{asset_type}_evidence", "")).strip()
+    try:
+        evidence_time = float(selection.get(f"{asset_type}_evidence_time"))
+    except (TypeError, ValueError):
+        return f"{asset_type} selection requires an evidence timestamp for beat {beat['beat_id']}"
+    if len(evidence) < 8:
+        return f"{asset_type} selection requires a concrete frame observation for beat {beat['beat_id']}"
+    if not float(beat["start"]) <= evidence_time <= float(beat["end"]):
+        return f"{asset_type} evidence timestamp is outside beat {beat['beat_id']}"
+    return ""
+
+
+def creative_coverage_problems(data: Dict[str, Any], taxonomy: Dict[str, Any]) -> List[str]:
+    """Reject formally valid plans that skipped meaningful visual decisions."""
+    problems: List[str] = []
+    rules = selection_rules(taxonomy, "visual")
+    decisions = {str(item.get("beat_id")): item for item in data.get("decisions", []) if isinstance(item, dict)}
+    opportunities = [beat for beat in data.get("beats", []) if beat.get("visual_candidates")]
+    minimum = min(max(0, int(rules.get("minimum_selected", 0))), len(opportunities))
+    selected_count = len(data.get("visual_effects", []))
+    if selected_count < minimum:
+        problems.append(f"visual-effect coverage below minimum: selected {selected_count}, required {minimum}")
+    for beat in opportunities:
+        decision = decisions.get(str(beat.get("beat_id")), {})
+        status = decision.get("visual_status")
+        if requires_selection(beat, "visual", rules) and status != "selected":
+            problems.append(f"priority beat requires a visual effect: {beat.get('beat_id')}")
+        if status == "no_effect" and rules.get("require_no_effect_reason", False):
+            if len(str(decision.get("visual_no_effect_reason", "")).strip()) < 8:
+                problems.append(f"visual no-effect decision lacks a grounded reason: {beat.get('beat_id')}")
+        if status in ("selected", "no_effect") and rules.get("require_visual_evidence", False):
+            if len(str(decision.get("visual_evidence", "")).strip()) < 8:
+                problems.append(f"visual decision lacks frame evidence: {beat.get('beat_id')}")
+    return problems
 
 
 def rank_candidates(
@@ -552,13 +605,28 @@ def apply_selections(plan_path: Path, selections_path: Path, taxonomy_path: Path
                 reason = beat.get("character_effect_eligibility", {}).get("reason", "not eligible")
                 raise ValueError(f"character selection is ineligible for beat {beat_id}: {reason}")
             if selected_id is None:
+                if requires_selection(beat, asset_type, rules):
+                    raise ValueError(f"priority beat requires a {asset_type} selection: {beat_id}")
+                evidence_problem = visual_evidence_problem(selection, asset_type, beat, rules)
+                if evidence_problem:
+                    raise ValueError(evidence_problem)
                 if not rules["allow_no_effect"]:
                     raise ValueError(f"{asset_type} selection is required for beat: {beat_id}")
+                no_effect_reason = str(selection.get(f"{asset_type}_no_effect_reason", "")).strip()
+                if candidates and rules.get("require_no_effect_reason", False) and len(no_effect_reason) < 8:
+                    raise ValueError(f"{asset_type} no-effect decision requires a grounded reason for beat: {beat_id}")
                 decision[f"{asset_type}_selected"] = None
                 decision[f"{asset_type}_status"] = "no_effect"
+                decision[f"{asset_type}_no_effect_reason"] = no_effect_reason
+                if asset_type in ("visual", "character"):
+                    decision[f"{asset_type}_evidence"] = str(selection.get(f"{asset_type}_evidence", "")).strip()
+                    decision[f"{asset_type}_evidence_time"] = selection.get(f"{asset_type}_evidence_time")
                 continue
             if selected_id not in candidates:
                 raise ValueError(f"{asset_type} selection is not in shortlist for beat {beat_id}: {selected_id}")
+            evidence_problem = visual_evidence_problem(selection, asset_type, beat, rules)
+            if evidence_problem:
+                raise ValueError(evidence_problem)
             problem = diversity_problem(str(selected_id), float(beat["start"]), history, rules, asset_type)
             if problem:
                 raise ValueError(problem)
@@ -566,6 +634,9 @@ def apply_selections(plan_path: Path, selections_path: Path, taxonomy_path: Path
             output.append(item)
             decision[f"{asset_type}_selected"] = selected_id
             decision[f"{asset_type}_status"] = "selected"
+            if asset_type in ("visual", "character"):
+                decision[f"{asset_type}_evidence"] = str(selection.get(f"{asset_type}_evidence", "")).strip()
+                decision[f"{asset_type}_evidence_time"] = selection.get(f"{asset_type}_evidence_time")
         decisions.append(decision)
 
     data["visual_effects"] = visual_effects
@@ -579,6 +650,9 @@ def apply_selections(plan_path: Path, selections_path: Path, taxonomy_path: Path
         "selection_source": str(selections_path),
     }
     data["validation"] = {"status": "pending"}
+    coverage_problems = creative_coverage_problems(data, taxonomy)
+    if coverage_problems:
+        raise ValueError("; ".join(coverage_problems))
     return data
 
 
@@ -638,6 +712,7 @@ def validate(plan_path: Path, draft_path: Path | None, catalog_path: Path | None
     visual_rules = selection_rules(taxonomy, "visual")
     sound_rules = selection_rules(taxonomy, "sound")
     character_rules = selection_rules(taxonomy, "character")
+    problems.extend(creative_coverage_problems(data, taxonomy))
     for item in data.get("visual_effects", []) + data.get("sound_effects", []) + data.get("character_effects", []):
         if float(item.get("duration", 0)) <= 0:
             problems.append(f"non-positive duration: {item.get('asset_id')}")
@@ -743,6 +818,7 @@ def main() -> int:
     p_validate.add_argument("--draft", type=Path)
     p_validate.add_argument("--catalog", type=Path)
     p_validate.add_argument("--taxonomy", type=Path, default=DEFAULT_TAXONOMY)
+    p_validate.add_argument("--output", type=Path, help="Optional JSON report path for the validation gate")
     p_preview = sub.add_parser("preview")
     p_preview.add_argument("--video", type=Path, required=True)
     p_preview.add_argument("--plan", type=Path, required=True)
@@ -769,6 +845,9 @@ def main() -> int:
             })
         elif args.command == "validate":
             result = validate(args.plan, args.draft, args.catalog, args.taxonomy)
+            if args.output:
+                args.output.parent.mkdir(parents=True, exist_ok=True)
+                args.output.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
             emit("succeeded" if result["valid"] else "failed", args.command, result)
             return 0 if result["valid"] else 2
         elif args.command == "select":

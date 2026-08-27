@@ -111,6 +111,12 @@ class CaptionQcTests(unittest.TestCase):
         self.assertTrue(all(media_role.caption_reading_weight(entry["text"]) != 1 for entry in entries))
         self.assertEqual("".join(entry["text"] for entry in entries), text)
 
+    def test_caption_split_absorbs_a_single_character_before_later_punctuation(self):
+        text = "下肢的血液就会因为重力全回流到心脏里面，心脏负担瞬间加重"
+        entries = media_role.split_caption_entry({"start": 0.0, "end": 6.0, "text": text}, max_chars=18)
+        self.assertTrue(all(media_role.caption_reading_weight(entry["text"]) != 1 for entry in entries))
+        self.assertTrue(any("心脏里面" in entry["text"] for entry in entries))
+
     def test_caption_split_removes_all_display_punctuation(self):
         entries = media_role.split_caption_entry({"start": 0.0, "end": 3.0, "text": "赶紧坐下，立刻拨打120！"})
         self.assertEqual([entry["text"] for entry in entries], ["赶紧坐下", "立刻拨打120"])

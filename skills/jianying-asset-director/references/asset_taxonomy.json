@@ -6,7 +6,11 @@
       "min_score": 2.0,
       "max_same_effect_per_plan": 2,
       "repeat_cooldown_seconds": 45.0,
-      "allow_no_effect": true
+      "allow_no_effect": true,
+      "minimum_selected": 4,
+      "required_purposes": ["warning", "chapter", "correct_action", "time_pressure", "emergency_call"],
+      "require_visual_evidence": true,
+      "require_no_effect_reason": true
     },
     "sound": {
       "candidate_limit": 10,

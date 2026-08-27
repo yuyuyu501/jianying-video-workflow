@@ -92,3 +92,15 @@ class PipPlanningTests(unittest.TestCase):
         }]}
         pip.apply_visual_decisions(review, {"segments": []}, {}, "require")
         self.assertEqual(review["pip_reviews"][0]["status"], "rejected")
+
+    def test_missing_auto_visual_review_also_rejects_pip(self):
+        review = {"pip_reviews": [{
+            "segment_index": 1,
+            "status": "approved",
+            "selected_candidate": {"position": "middle_left", "safe": True},
+            "candidates": [{"position": "middle_left", "safe": True}],
+        }]}
+        pip.apply_visual_decisions(review, {"segments": []}, {}, "auto")
+        finding = review["pip_reviews"][0]
+        self.assertEqual(finding["status"], "rejected")
+        self.assertEqual(finding["visual_review_status"], "missing")

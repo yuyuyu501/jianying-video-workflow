@@ -111,6 +111,32 @@ class AssetDirectorTests(unittest.TestCase):
             report = asset_director.validate(selected_plan, None, catalog, taxonomy)
             self.assertTrue(report["valid"], report["problems"])
 
+    def test_priority_beat_requires_frame_evidence_and_effect_coverage(self):
+        with tempfile.TemporaryDirectory() as directory:
+            taxonomy_data = dict(TAXONOMY)
+            taxonomy_data["selection"] = dict(TAXONOMY["selection"])
+            taxonomy_data["selection"]["visual"] = {
+                **TAXONOMY["selection"]["visual"],
+                "minimum_selected": 1,
+                "required_purposes": ["warning"],
+                "require_visual_evidence": True,
+                "require_no_effect_reason": True,
+            }
+            taxonomy = self.write_json(directory, "taxonomy.json", taxonomy_data)
+            catalog = self.write_json(directory, "catalog.json", {"assets": [asset("a", "故障A", ["warning"])]})
+            beats = self.write_json(directory, "beats.json", {"beats": [{"beat_id": "one", "start": 10, "end": 11, "purpose": "warning"}]})
+            plan_path = self.write_json(directory, "plan.json", asset_director.plan(beats, catalog, taxonomy, "medical_education"))
+            missing = self.write_json(directory, "missing.json", {"selections": [{"beat_id": "one", "visual_asset_id": None, "sound_asset_id": None}]})
+            with self.assertRaisesRegex(ValueError, "priority beat requires"):
+                asset_director.apply_selections(plan_path, missing, taxonomy)
+            selected = self.write_json(directory, "selected.json", {"selections": [{
+                "beat_id": "one", "visual_asset_id": "a", "sound_asset_id": None,
+                "visual_evidence_time": 10.5,
+                "visual_evidence": "ECG warning graphic is visible and the lower subtitle zone is clear.",
+            }]})
+            result = asset_director.apply_selections(plan_path, selected, taxonomy)
+            self.assertEqual(len(result["visual_effects"]), 1)
+
     def test_sound_effects_target_the_validated_sfx_track(self):
         candidate = {**asset("sound", "提示音", ["warning"]), "score": 3.0, "reasons": ["warning"]}
         taxonomy = TAXONOMY

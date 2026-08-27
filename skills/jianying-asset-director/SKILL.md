@@ -55,10 +55,14 @@ draft skeleton before asset selection so every later write has a fixed target.
    user preferences.
 7. **AI selection**: give the AI the beat's representative frame(s),
    `spoken_text`, purpose, domain style, and its `visual_candidates` /
-   `sound_candidates`. It must return one candidate ID from each shortlist or
-   `null` for no effect. Apply this response using the `select` command; the
-   command rejects invented IDs, duplicate beat decisions, excessive reuse,
-   and effects within the configured cooldown window.
+   `sound_candidates`. It must return a candidate ID or `null`, plus a frame
+   timestamp and concrete visual observation. When selecting `null` despite
+   viable candidates, it must give a specific no-effect reason. The workflow
+   requires scene-effect coverage for configured priority purposes and a
+   configured minimum count, so it refuses an all-empty plan. Apply this
+   response using the `select` command; it rejects invented IDs, missing
+   evidence, unsupported empty selections, duplicate beat decisions, excessive
+   reuse, and effects within the configured cooldown window.
 8. **Character-effect selection**: then use `character_candidates` as a
    separate decision. A beat is eligible only when analysis confirms a visible
    person/face and no full-height B-roll hides the main speaker. The AI selects
@@ -183,6 +187,8 @@ decision before draft creation:
     {
       "beat_id": "warning-01",
       "visual_asset_id": "real_resource_id_from_visual_candidates",
+      "visual_evidence_time": 10.8,
+      "visual_evidence": "The ECG graphic fills the frame and the lower subtitle zone remains unobstructed.",
       "character_asset_id": null,
       "sound_asset_id": null,
       "reason": "The frame and phrase need a brief restrained warning accent."
