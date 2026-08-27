@@ -60,8 +60,6 @@ def validate(
         material = video_by_id.get(segment.get("material_id"))
         if material is None:
             errors.append(f"PiP segment {index} references a missing video material")
-        elif expected and str(Path(str(material.get("path", ""))).resolve()) != expected:
-            errors.append(f"PiP segment {index} does not use the approved silent rough-cut visual")
         mask_refs = [masks_by_id.get(item) for item in segment.get("extra_material_refs", [])]
         circle = next((mask for mask in mask_refs if mask and mask.get("name") in {"circle", "Circle", "圆形"}), None)
         if circle is None:
@@ -77,19 +75,28 @@ def validate(
             errors.append(f"PiP segment {index} does not overlap B-roll")
         if circle is not None and require_visual_review:
             config = circle.get("config", {})
+            start = round(float(segment.get("target_timerange", {}).get("start", 0)) / 1_000_000, 3)
+            review = review_by_start.get(start)
+            crop_mode = str(review.get("crop_mode", "")) if review else ""
+            expected_material = expected
+            if crop_mode == "baked_head":
+                expected_material = str(Path(str(review.get("crop_video", ""))).resolve())
+                if material is not None and int(material.get("width", 0)) != int(material.get("height", 0)):
+                    errors.append(f"PiP segment {index} baked crop is not square")
+            if expected_material and material is not None and str(Path(str(material.get("path", ""))).resolve()) != expected_material:
+                errors.append(f"PiP segment {index} does not use the approved PiP source material")
             visible_diameter = float(config.get("height", 0)) * float(scale.get("y", 1.0))
             if not 0.18 <= visible_diameter <= 0.40:
                 errors.append(f"PiP segment {index} has an invalid effective circular size")
-            start = round(float(segment.get("target_timerange", {}).get("start", 0)) / 1_000_000, 3)
-            review = review_by_start.get(start)
             if review is None:
                 errors.append(f"PiP segment {index} has no matching face-detection review")
             else:
-                expected_x, expected_y = float(review["face_center_x"]), float(review["face_center_y"])
+                expected_x, expected_y = (0.0, 0.0) if crop_mode == "baked_head" else (float(review["face_center_x"]), float(review["face_center_y"]))
                 actual_x, actual_y = float(config.get("centerX", 0)), float(config.get("centerY", 0))
                 if abs(actual_x - expected_x) > 0.04 or abs(actual_y - expected_y) > 0.04:
                     errors.append(f"PiP segment {index} circular mask is not centered on the detected face")
-                if abs(float(config.get("height", 0)) - float(review["mask_size"])) > 0.03:
+                expected_mask_size = 0.90 if crop_mode == "baked_head" else float(review["mask_size"])
+                if abs(float(config.get("height", 0)) - expected_mask_size) > 0.03:
                     errors.append(f"PiP segment {index} circular mask size differs from face-driven review")
                 face_fill = float(review.get("face_fill_ratio", 0))
                 if not 0.45 <= face_fill <= 0.58 or not review.get("head_envelope"):

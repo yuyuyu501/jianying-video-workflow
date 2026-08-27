@@ -72,3 +72,24 @@ class DraftPipTests(unittest.TestCase):
         self.assertEqual(report["status"], "failed")
         self.assertTrue(any("complete-head" in error for error in report["errors"]))
         self.assertTrue(any("anchored" in error for error in report["errors"]))
+
+    def test_baked_head_crop_uses_square_material_and_centered_mask(self):
+        document = self.document()
+        document["materials"]["videos"][0] = {
+            "id": "visual",
+            "path": "C:/pip-head.mp4",
+            "width": 720,
+            "height": 720,
+        }
+        document["materials"]["masks"][0]["config"] = {"centerX": 0.0, "centerY": 0.0, "height": 0.90}
+        document["tracks"][1]["segments"][0]["material_id"] = "visual"
+        document["tracks"][1]["segments"][0]["clip"]["scale"] = {"x": 0.2444, "y": 0.2444}
+        review = {"status": "succeeded", "pip_reviews": [{
+            "final_start": 2.0, "status": "approved", "crop_mode": "baked_head", "crop_video": "C:/pip-head.mp4",
+            "face_center_x": 0.0, "face_center_y": -0.2, "mask_size": 0.5,
+            "face_fill_ratio": 0.52, "head_envelope": {"x": 1},
+            "selected_candidate": {"safe": True, "placement_transform_x": 0.56, "placement_transform_y": 0.53},
+        }]}
+        report = pip.validate(document, expected_visual="C:/approved.visual.mp4", require_pip=True,
+                              pip_visual_review=review, require_visual_review=True)
+        self.assertEqual(report["status"], "passed", report["errors"])

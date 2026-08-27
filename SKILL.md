@@ -262,7 +262,12 @@ Before handing off the draft, verify:
   frames and supplies a complete-head envelope, protected information zones,
   candidate placement, crop size, source scale, and face-anchored transform.
   It also renders each candidate as a composite over its actual B-roll frame.
-  Fixed face center, crop, or placement constants are not permitted. In
+  During assembly, an approved head envelope is baked into a separate square,
+  silent PiP MP4, and the materialized review is saved beside the assembly QC.
+  The draft then uses a centered circular mask and only applies
+  the reviewed placement transform; it must not rely on shifting the full
+  vertical source under an off-center mask. Fixed face center, crop, or
+  placement constants are not permitted. In
   `require` mode, an approved visual-decision file must select one safe
   candidate. PiP is allowed to be skipped when no safe candidate exists;
 - JianYing effects and sound effects use validated local-library IDs;

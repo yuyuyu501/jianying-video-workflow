@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import subprocess
 import sys
@@ -61,6 +62,52 @@ def has_audio_stream(path: Path) -> bool:
     return any(stream.get("codec_type") == "audio" for stream in json.loads(result.stdout).get("streams", []))
 
 
+def prepare_pip_crop(visual: Path, item: dict, output_dir: Path, index: int) -> dict:
+    """Bake a face-centered square crop before JianYing materialization.
+
+    JianYing's mask coordinates are relative to the whole source material.
+    Applying a non-central mask to a full-frame vertical video makes the crop
+    depend on editor transform semantics and is easy to misread in the UI.
+    The reviewed head envelope is therefore converted into a real square MP4;
+    the draft only applies a centered circle mask and a placement transform.
+    """
+    review = item["speaker_pip"].get("visual_review") or {}
+    envelope = review.get("head_envelope") or item["speaker_pip"].get("head_envelope")
+    if not isinstance(envelope, dict):
+        raise ValueError(f"PiP segment {index} has no reviewed head envelope")
+    frame_size = review.get("frame_size", {})
+    width = int(frame_size.get("width", 1080))
+    height = int(frame_size.get("height", 1920))
+    x, y = float(envelope["x"]), float(envelope["y"])
+    box_width, box_height = float(envelope["width"]), float(envelope["height"])
+    side = int(math.ceil(max(box_width, box_height) * 1.18))
+    side = max(2, min(side, width, height))
+    center_x, center_y = x + box_width / 2, y + box_height / 2
+    left = int(round(max(0, min(width - side, center_x - side / 2))))
+    top = int(round(max(0, min(height - side, center_y - side / 2))))
+    if not (left <= x and top <= y and left + side >= x + box_width and top + side >= y + box_height):
+        raise ValueError(f"PiP segment {index} crop cannot contain the reviewed complete head")
+    side -= side % 2
+    left -= left % 2
+    top -= top % 2
+    duration = float(item["duration"])
+    start = float(item["start"])
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output = output_dir / f"pip_{index:02d}_head.mp4"
+    command = [
+        "ffmpeg", "-y", "-v", "error", "-i", str(visual), "-ss", f"{start:.6f}",
+        "-t", f"{duration:.6f}", "-vf", f"crop={side}:{side}:{left}:{top},scale=720:720:flags=lanczos",
+        "-an", "-c:v", "libx264", "-crf", "18", "-preset", "veryfast", "-pix_fmt", "yuv420p",
+        "-movflags", "+faststart", str(output),
+    ]
+    subprocess.run(command, check=True)
+    if not output.is_file() or output.stat().st_size <= 0:
+        raise ValueError(f"PiP segment {index} crop output was not created")
+    if has_audio_stream(output):
+        raise ValueError(f"PiP segment {index} crop unexpectedly contains audio")
+    return {"path": str(output.resolve()), "left": left, "top": top, "size": side}
+
+
 def require_empty_skeleton(document: dict) -> None:
     report = validate_skeleton(document)
     if report["status"] != "passed":
@@ -106,6 +153,7 @@ def load_broll_plan(path: Path, pip_visual_review: Path | None = None) -> list[d
         face_center_x = float(review.get("face_center_x") if review else speaker_pip.get("face_center_x", 0.0))
         face_center_y = float(review.get("face_center_y") if review else speaker_pip.get("face_center_y", -0.22))
         mask_size = float(review.get("mask_size") if review else speaker_pip.get("mask_size", 0.52))
+        visible_diameter_ratio = float(review.get("visible_diameter_ratio", 0.22) if review else speaker_pip.get("visible_diameter_ratio", 0.22))
         placement_x = float(candidate.get("placement_transform_x") if review else (-0.56 if speaker_pip.get("position") == "upper_left" else 0.56))
         placement_y = float(candidate.get("placement_transform_y") if review else 0.20)
         if not 0.18 <= scale <= 1.15 or not 0.16 <= mask_size <= 0.60 or not -1.0 <= face_center_x <= 1.0 or not -1.0 <= face_center_y <= 1.0 or not -0.90 <= placement_x <= 0.90 or not -0.90 <= placement_y <= 0.90:
@@ -122,6 +170,7 @@ def load_broll_plan(path: Path, pip_visual_review: Path | None = None) -> list[d
                 "face_center_x": face_center_x,
                 "face_center_y": face_center_y,
                 "mask_size": mask_size,
+                "visible_diameter_ratio": visible_diameter_ratio,
                 "placement_transform_x": placement_x,
                 "placement_transform_y": placement_y,
                 "visual_review": review,
@@ -228,6 +277,7 @@ def main() -> int:
         draft_info_path = draft_path / "draft_info.json"
         empty_skeleton_backup = draft_info_path.read_bytes()
         require_empty_skeleton(load_json(draft_info_path))
+        pip_visual_review_payload = load_json(args.pip_visual_review.resolve()) if args.pip_visual_review else None
         broll = load_broll_plan(args.broll_plan.resolve(), args.pip_visual_review.resolve() if args.pip_visual_review else None) if args.broll_plan else []
         entries = read_srt(captions)
         caption_layout_review = load_json(args.caption_layout_review.resolve())
@@ -246,25 +296,37 @@ def main() -> int:
         add_tracks(project, draft)
         project.add_media_safe(str(visual), start_time=0.0, track_name="MainVisual")
         project.add_audio_safe(str(narration), start_time=0.0, track_name="Narration")
-        for item in broll:
+        pip_crop_dir = args.output.resolve().parent / "pip-face-clips"
+        for index, item in enumerate(broll, start=1):
             project.add_media_safe(str(item["video"]), start_time=item["start"], duration=item["duration"], source_start=item["source_start"], track_name="B_Roll")
             if item["speaker_pip"]["enabled"]:
-                source_start = item["start"]
-                source_range = draft.Timerange(round(source_start * 1_000_000), round(item["duration"] * 1_000_000))
                 pip = item["speaker_pip"]
+                crop = prepare_pip_crop(visual, item, pip_crop_dir, index)
+                pip["crop_path"] = crop["path"]
+                pip["crop_box"] = crop
+                if pip_visual_review_payload is not None:
+                    for finding in pip_visual_review_payload.get("pip_reviews", []):
+                        if int(finding.get("segment_index", 0)) == index:
+                            finding["crop_mode"] = "baked_head"
+                            finding["crop_video"] = crop["path"]
+                            finding["crop_box"] = crop
+                            break
+                crop_material = draft.VideoMaterial(crop["path"])
+                source_range = draft.Timerange(0, round(item["duration"] * 1_000_000))
+                target_range = draft.Timerange(round(item["start"] * 1_000_000), source_range.duration)
+                crop_mask_size = 0.90
                 segment = draft.VideoSegment(
-                    draft.VideoMaterial(str(visual)), draft.Timerange(round(item["start"] * 1_000_000), source_range.duration),
+                    crop_material, target_range,
                     source_timerange=source_range, volume=0.0,
                     clip_settings=draft.ClipSettings(
-                        scale_x=pip["scale"], scale_y=pip["scale"],
+                        scale_x=pip["visible_diameter_ratio"] / crop_mask_size,
+                        scale_y=pip["visible_diameter_ratio"] / crop_mask_size,
                         transform_x=pip["placement_transform_x"], transform_y=pip["placement_transform_y"],
                     ),
                 )
                 segment.add_mask(
                     draft.MaskType.圆形,
-                    center_x=pip["face_center_x"] * segment.material_size[0] / 2,
-                    center_y=pip["face_center_y"] * segment.material_size[1] / 2,
-                    size=pip["mask_size"],
+                    center_x=0.0, center_y=0.0, size=crop_mask_size,
                     feather=1.5,
                 )
                 project.script.add_segment(segment, "SpeakerPiP")
@@ -279,6 +341,16 @@ def main() -> int:
             add_caption(project, draft, entry, style)
         asset_plan = load_json(args.asset_plan.resolve()) if args.asset_plan else {}
         visual_effect_count, character_effect_count = materialize_effects(project, draft, asset_plan)
+        materialized_review_path = args.output.resolve().parent / "pip_visual_review.materialized.json"
+        if pip_visual_review_payload is not None:
+            pip_visual_review_payload["materialization"] = {
+                "mode": "baked_head",
+                "crop_dir": str(pip_crop_dir.resolve()),
+            }
+            materialized_review_path.write_text(
+                json.dumps(pip_visual_review_payload, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
         saved = project.save()
         document = load_json(Path(saved["draft_path"]) / "draft_info.json")
         expected_duration = max(entry["end"] for entry in entries)
@@ -294,7 +366,7 @@ def main() -> int:
             "narration": validate_narration(document, "Narration", expected_duration),
             "pip": validate_pip(
                 document, str(visual), require_pip=any(item["speaker_pip"]["enabled"] for item in broll),
-                pip_visual_review=load_json(args.pip_visual_review.resolve()) if args.pip_visual_review else None,
+                pip_visual_review=pip_visual_review_payload,
                 require_visual_review=bool(args.pip_visual_review),
             ),
             "effects": validate_effects(document, visual_effect_count, character_effect_count),
@@ -306,8 +378,14 @@ def main() -> int:
             "draft_path": saved["draft_path"],
             "caption_presentation": presentation,
             "caption_layout_review": str(args.caption_layout_review.resolve()),
+            "pip_visual_review": str(materialized_review_path) if pip_visual_review_payload is not None else None,
             "broll_segments": len(broll),
             "speaker_pip_segments": sum(item["speaker_pip"]["enabled"] for item in broll),
+            "pip_crops": [
+                {"segment_index": index, **item["speaker_pip"]["crop_box"]}
+                for index, item in enumerate(broll, start=1)
+                if item["speaker_pip"].get("enabled") and item["speaker_pip"].get("crop_box")
+            ],
             "validation": reports,
             "errors": errors,
         }
