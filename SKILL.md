@@ -15,6 +15,8 @@ video-understand (external)
 -> media-role-director (bundled)
 -> reviewed source roles and audio policies
 -> talking-head-rough-cut (bundled) + FFmpeg
+-> strict short/long pause tightening + semantic rough cut
+-> post-cut pace decision (no change or synchronized audio/video speed)
 -> validated silent visual + independent narration + review MP4
 -> transcribe rendered rough-cut review + review simplified-Chinese caption template
 -> global captions.srt + speech_timeline.json
@@ -132,7 +134,17 @@ routes useful ambient audio explicitly.
 
 To render reviewed narration rough cuts, supply the decisions file. Every
 accepted cut produces a silent visual MP4, a narration-only M4A, a review MP4,
-and a QC report. The workflow then transcribes the rendered review MP4 and
+and a QC report. Pause planning starts at 0.15 seconds and retains about 0.18
+seconds total at ordinary phrase boundaries. After those cuts, the workflow
+measures transcript characters per minute and decides whether synchronized
+audio/video speed-up is needed. The default short-form target is 285 characters
+per minute, with no speed change at or above 260; a template
+`video-understand` JSON passed as `--pace-reference-analysis` replaces that
+target with measured template pace. Automatic speed is capped at 1.35x, and a
+higher recommendation requires another semantic-cut review. A review-marked
+pace decision blocks rendering unless `--approve-rough-cut-pace-review` is
+supplied after inspection. The workflow then
+transcribes the rendered, speed-adjusted review MP4 and
 stops with a caption-review template. Correct that template against the review
 video and approved copy in simplified Chinese, preserving its rough-cut
 timestamps; pass it as `--caption-review` to generate the final-timeline
@@ -152,6 +164,8 @@ python scripts/run_workflow.py `
   --beats "work\final-timeline-beats.json" `
   --draft-name "Heart_Emergency_2026-08-25" `
   --render-rough-cut `
+  --rough-cut-pace-mode auto `
+  --rough-cut-target-cpm 285 `
   --output-dir "work\video-job"
 ```
 
@@ -258,6 +272,12 @@ Before handing off the draft, verify:
 - every source has a reviewed role and audio policy; visual-only B-roll is
   muted only when its original audio is editorially irrelevant;
 - cut boundaries do not remove words, safety language, or intentional pauses;
+- rendered narration has no unexplained residual pause above the configured
+  short-pause limit, and `pace_qc` records measured, recommended, and applied
+  speed plus actual output density;
+- visual and narration receive the same speed, and all captions/effects use the
+  rendered speed-adjusted rough-cut timebase;
+- independent visual and narration outputs differ by no more than 0.1 seconds;
 - audio fades prevent clicks and narration remains intelligible;
 - the narration M4A, silent visual MP4, and review MP4 all match the approved
   EDL within audio-frame tolerance; narration has no unplanned long silence;

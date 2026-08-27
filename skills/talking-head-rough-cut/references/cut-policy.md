@@ -4,10 +4,36 @@
 
 | Gap duration | Default treatment |
 | --- | --- |
-| Under 0.45 s | Keep. This is normal speech rhythm. |
-| 0.45-0.85 s | Review in context. Keep unless it interrupts pace. |
-| Over 0.85 s | Shorten the middle while retaining 0.20-0.35 s at both sides. |
+| Under 0.15 s | Keep. It may be an acoustic dip inside a word. |
+| 0.15-0.35 s | Detect and tighten when there is at least 0.06 s of removable air. Retain about 0.18 s total, centered on the original gap. |
+| 0.35-0.85 s | Tighten by default to about 0.18 s total unless transcript and picture show intentional emphasis. |
+| Over 0.85 s | Tighten and inspect the cut boundary; do not assume a long gap is editorially intentional. |
 | Over 2.0 s | Review picture and audio. It may be a deliberate visual beat. |
+
+Detection starts at 0.15 seconds, but detection is not permission to clip speech.
+Inspect low-energy consonants, breaths attached to words, medication names,
+dosages, and emergency instructions. QC analyzes the rendered narration again
+and fails when unexplained pauses above the configured residual-pause limit
+remain.
+Duration comparison allows only frame-level rounding accumulated across the
+retained ranges; it must not hide a real visual/narration mismatch.
+
+## Pace Decision
+
+Measure pace only after semantic cuts and pause tightening. Use non-punctuation
+transcript characters per minute so silence and speaking rate are not confused.
+
+- Below 260 characters/minute: recommend synchronized audio/video speed-up.
+- Target 285 characters/minute by default for short-form educational speech.
+- At or above 260 characters/minute: do not speed up merely to reach the target.
+- A supplied template-analysis JSON replaces the default target with the
+  template's measured transcript density.
+- Apply the same speed to video PTS and narration `atempo`. Never speed only the
+  detached narration track.
+- Cap automatic speed at 1.35x. If the uncapped recommendation is higher, apply
+  no more than the cap and review repeated or off-topic content again.
+- Generate captions and every downstream timestamp only from the rendered,
+  speed-adjusted rough cut.
 
 ## Semantic Removal
 

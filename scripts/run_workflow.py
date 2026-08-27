@@ -96,6 +96,12 @@ def main() -> int:
     parser.add_argument("--render-rough-cut", action="store_true", help="Render every approved narration rough cut and then generate global captions")
     parser.add_argument("--skip-captions", action="store_true", help="Do not generate captions after rendering rough cuts")
     parser.add_argument("--rough-cut-quality", choices=("preview", "final"), default="preview")
+    parser.add_argument("--rough-cut-pace-mode", choices=("auto", "review", "off"), default="auto", help="Judge synchronized rough-cut speed automatically, report it for review, or disable it")
+    parser.add_argument("--rough-cut-target-cpm", type=float, default=285.0, help="Target non-punctuation Chinese transcript characters per minute")
+    parser.add_argument("--rough-cut-minimum-cpm", type=float, default=260.0, help="Do not speed up rough cuts already at or above this density")
+    parser.add_argument("--rough-cut-max-speed", type=float, default=1.35, help="Maximum synchronized audio/video speed chosen by automatic pace analysis")
+    parser.add_argument("--approve-rough-cut-pace-review", action="store_true", help="Allow rendering after inspecting a pace decision marked review_required")
+    parser.add_argument("--pace-reference-analysis", type=Path, help="Optional video-understand JSON for a template video; its measured speech density becomes the pace target")
     parser.add_argument("--output-dir", type=Path, required=True)
     args = parser.parse_args()
     videos = [video.resolve() for video in args.video]
@@ -119,7 +125,7 @@ def main() -> int:
     jianying_python = args.jianying_python or Path(os.environ.get("JY_PYTHON", "").strip() or sys.executable)
     if not jianying_python.is_file():
         raise FileNotFoundError(f"JianYing Python executable not found: {jianying_python}")
-    for path in (args.srt, args.speech_timeline, args.caption_review, args.broll_plan, args.approved_asset_plan, args.approved_filter_plan, args.approved_sticker_plan, args.speaker_pip_visual_decisions):
+    for path in (args.srt, args.speech_timeline, args.caption_review, args.broll_plan, args.approved_asset_plan, args.approved_filter_plan, args.approved_sticker_plan, args.speaker_pip_visual_decisions, args.pace_reference_analysis):
         if path and not path.is_file():
             raise FileNotFoundError(path)
     if args.exported_video and not args.exported_video.is_file():
@@ -207,7 +213,13 @@ def main() -> int:
         plan_command = [
             sys.executable, str(skills["talking-head-rough-cut"] / "scripts" / "rough_cut.py"), "plan",
             "--video", str(source["video"]), "--analysis", str(source["analysis"]), "--output", str(plan),
+            "--pace-mode", args.rough_cut_pace_mode,
+            "--target-cpm", str(args.rough_cut_target_cpm),
+            "--minimum-cpm", str(args.rough_cut_minimum_cpm),
+            "--max-speed", str(args.rough_cut_max_speed),
         ]
+        if args.pace_reference_analysis:
+            plan_command.extend(["--pace-reference-analysis", str(args.pace_reference_analysis.resolve())])
         if args.reference_script:
             plan_command.extend(["--reference-script", str(args.reference_script.resolve())])
         exclusions = source_exclusions(args.semantic_exclusions, source_id, len(speech_sources), rough_cut_dir)
@@ -220,11 +232,14 @@ def main() -> int:
             visual = rough_cut_dir / f"{source_id}.visual.mp4"
             narration = rough_cut_dir / f"{source_id}.narration.m4a"
             qc_report = rough_cut_dir / f"{source_id}.qc.json"
-            run([
+            render_command = [
                 sys.executable, str(skills["talking-head-rough-cut"] / "scripts" / "rough_cut.py"), "render",
                 "--plan", str(plan), "--output", str(preview), "--visual-output", str(visual),
                 "--narration-output", str(narration), "--quality", args.rough_cut_quality, "--overwrite",
-            ])
+            ]
+            if args.approve_rough_cut_pace_review:
+                render_command.append("--approve-pace-review")
+            run(render_command)
             run([
                 sys.executable, str(skills["talking-head-rough-cut"] / "scripts" / "rough_cut.py"), "validate",
                 "--plan", str(plan), "--output", str(preview), "--visual", str(visual),
