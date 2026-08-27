@@ -1,6 +1,6 @@
 ---
 name: jianying-video-workflow
-description: Install and run a portable multi-source JianYing production workflow. Use to classify source video roles and audio policies, rough-cut retained narration, generate a final-timeline SRT, match JianYing effects and sound effects, then create and validate a JianYing draft-library project. This workflow never launches JianYing or exports video from JianYing.
+description: Install and run a portable multi-source JianYing production workflow. Use to classify source video roles and audio policies, rough-cut retained narration, generate a final-timeline SRT, match JianYing effects, filters, stickers, and sound effects, then create and validate a JianYing draft-library project. This workflow never launches JianYing or exports video from JianYing.
 ---
 
 # JianYing Video Workflow
@@ -21,12 +21,14 @@ video-understand (external)
 -> caption QC: rough-cut speech coverage, source mapping, text completeness, and reference-script coverage
 -> video-understand (final-timeline representative frames)
 -> optional SpeakerPiP analysis/review (only when source mix requests it)
--> new JianYing draft skeleton + named-track QC, including an empty SpeakerPiP track
+-> new JianYing draft skeleton + named-track QC, including empty Filters, SpeakerPiP, and Stickers tracks
 -> jianying-asset-director (bundled)
 -> scene-effect/SFX shortlist and AI selection
 -> character-effect shortlist and AI selection
+-> portrait filter/beautification shortlist, frame-grounded selection, and Filters-track QC
+-> content-aware sticker shortlist, placement/collision review, and Stickers-track QC
 -> jianying-editor (external)
--> materialize silent visual, narration, B-roll, optional PiP, captions, and effects on the named tracks
+-> materialize silent visual, filters, narration, B-roll, optional PiP, effects, stickers, and captions on the named tracks
 -> per-stage and post-build composition QC
 -> optional user-exported MP4 pixel QC (black frames, audio stream, subtitle timing, PiP face/circle render, OCR native-text review)
 ```
@@ -157,7 +159,8 @@ Then inspect the rough-cut previews, global SRT, and source mapping. Prepare
 timestamped visual beats on that final timeline and pass them with `--beats`
 and a new `--draft-name`. The workflow first creates a draft skeleton and
 stops unless its empty, named tracks pass QC: `MainVisual`, muted `B_Roll`,
-`SpeakerPiP`, `Narration`, `SFX`, `Effects`, `CharacterEffects`, and `Subtitles`. It refuses
+`SpeakerPiP`, `Filters`, `Narration`, `SFX`, `Effects`, `CharacterEffects`,
+`Stickers`, and `Subtitles`. It refuses
 to reuse a draft name unless `--overwrite` is explicitly passed to the skeleton
 script. This separates track structure from creative edits.
 
@@ -179,6 +182,25 @@ assembly. Character effects and SpeakerPiP remain conditional: no safe
 visible-person candidate is a valid reason for an empty optional track. Code
 validates resource IDs, creative coverage, evidence fields, repetition limits,
 cooldown, effect type, and eligibility before anything is materialized.
+
+After the video tracks are planned, run `visual_finish_director.py`. It creates
+one `Filters` plan for conservative talking-head beautification/color filtering
+and one `Stickers` plan for content-matched sticker accents. The filter stage
+may cover only visually inspected intervals where the speaker is visible; it
+must not claim face reshaping or skin retouching APIs that the installed draft
+library does not provide. Resolve every filter by its real `FilterType` name and
+resource ID. Keep intensity between 5 and 60, and reject overlapping filter segments.
+The full catalog remains in local JSON; plans expose at most eight portrait
+filters and 24 content-ranked sticker candidates so the model never traverses
+the complete resource library for every beat. A selected ID must remain in the
+generated shortlist as well as the verified catalog.
+
+The sticker stage is separate from scene and character effects. Select only
+resource IDs discovered in existing local JianYing drafts. Every sticker needs
+a content beat, representative-frame evidence, timing, scale/position/rotation,
+and a passed collision review covering the speaker face, captions, SpeakerPiP,
+native source text, and key actions. Either track may remain empty only when its
+approved plan contains a specific skip reason; omission is not a valid skip.
 
 Final SRT entries are generated only from the rendered rough-cut timebase. The
 caption review keeps natural transcript ranges; the caption stage then splits
@@ -249,6 +271,10 @@ Before handing off the draft, verify:
 - `draft_skeleton.qc.json` passed before any effect, subtitle, B-roll, or PiP
   segment is written; all required tracks exist once with the correct type and
   `B_Roll` begins muted;
+- `Filters` exists directly after the video-track group and contains only real
+  JianYing filter materials in `materials.effects` matching the approved name, resource ID, timing,
+  and conservative intensity; its visual review identifies where the talking
+  head is visible and what appearance issue the filter addresses;
 - the approved rough-cut review has video, audio, compatible codecs, and no black frames;
 - when an exported MP4 is supplied, `export_visual_qc.json` passed. This is a
   separate flattened-pixel gate and inspects actual export frames for PiP head
@@ -277,6 +303,9 @@ Before handing off the draft, verify:
 - every effect-track segment references a real `materials.video_effects` entry;
 - `Effects` contains only `video_effect` materials and `CharacterEffects`
   contains only `face_effect` materials;
+- `Stickers` contains only locally verified JianYing sticker resource IDs, and
+  every placement has passed frame-grounded face/caption/PiP/native-text/key-
+  action collision review before materialization;
 - character-effect segments use `face_target` and never overlap a full-height
   B-roll beat;
 - `caption_layout_review.json` must inspect representative rough-cut frames for
@@ -296,6 +325,13 @@ handoff:
 
 ```powershell
 python scripts/validate_draft_effects.py --draft-name "DraftName" --expected-count 10
+```
+
+Validate the independent finish tracks as well:
+
+```powershell
+python scripts/validate_draft_filters.py --draft-name "DraftName" --plan "work\filter_plan.json"
+python scripts/validate_draft_stickers.py --draft-name "DraftName" --plan "work\sticker_plan.json"
 ```
 
 The skeleton itself can be checked independently:
@@ -349,6 +385,9 @@ python scripts/assemble_draft.py --draft-name "DraftName" `
   --pip-visual-review "work\pip_visual_review.json" `
   --caption-layout-review "work\caption_layout_review.json" `
   --asset-plan "work\selected_plan.json" `
+  --filter-plan "work\filter_plan.json" `
+  --sticker-plan "work\sticker_plan.json" `
+  --finish-catalog "work\visual_finish_catalog.json" `
   --output "work\draft_assembly.qc.json" `
   --rebuild-empty-skeleton
 ```
@@ -364,7 +403,8 @@ It rotates basic lower captions, middle warning captions, rounded-background
 "bubble" captions, and sparse locally cached flower text. It uses only flower
 IDs found in `artistEffect`; unavailable flower resources fall back to the
 basic presentation. The main runner exposes the same step only with explicit
-`--materialize-draft --broll-plan ... --approved-asset-plan ...`; it currently
+`--materialize-draft --broll-plan ... --approved-asset-plan ...
+--approved-filter-plan ... --approved-sticker-plan ...`; it currently
 requires one narration source so the PiP can reference that source's validated
 silent visual. Verify PiP explicitly:
 

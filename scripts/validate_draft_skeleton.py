@@ -13,12 +13,15 @@ REQUIRED_TRACKS = {
     "MainVisual": "video",
     "B_Roll": "video",
     "SpeakerPiP": "video",
+    "Filters": "filter",
     "Narration": "audio",
     "SFX": "audio",
     "Effects": "effect",
     "CharacterEffects": "effect",
+    "Stickers": "sticker",
     "Subtitles": "text",
 }
+REQUIRED_TRACK_ORDER = list(REQUIRED_TRACKS)
 
 
 def default_draft_root() -> Path:
@@ -35,6 +38,9 @@ def validate(document: dict) -> dict:
         by_name.setdefault(str(track.get("name", "")), []).append(track)
 
     errors = []
+    actual_order = [str(track.get("name", "")) for track in tracks]
+    if actual_order != REQUIRED_TRACK_ORDER:
+        errors.append(f"track order {actual_order!r} does not match required order {REQUIRED_TRACK_ORDER!r}")
     for name, expected_type in REQUIRED_TRACKS.items():
         matches = by_name.get(name, [])
         if len(matches) != 1:
@@ -53,6 +59,7 @@ def validate(document: dict) -> dict:
     return {
         "status": "passed" if not errors else "failed",
         "required_tracks": REQUIRED_TRACKS,
+        "required_track_order": REQUIRED_TRACK_ORDER,
         "track_count": len(tracks),
         "errors": errors,
     }

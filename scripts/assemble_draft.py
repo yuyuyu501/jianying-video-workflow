@@ -14,9 +14,12 @@ from pathlib import Path
 from caption_presentation import available_flower_effects, plan_caption_styles
 from validate_draft_captions import read_srt, validate as validate_captions
 from validate_draft_effects import validate as validate_effects
+from validate_draft_filters import validate as validate_filters
 from validate_draft_narration import validate as validate_narration
 from validate_draft_pip import validate as validate_pip
 from validate_draft_skeleton import validate as validate_skeleton
+from validate_draft_stickers import validate as validate_stickers
+from visual_finish_director import validate_filter_plan, validate_sticker_plan
 from analyze_pip_faces import pip_request_mode
 
 
@@ -183,14 +186,16 @@ def load_broll_plan(path: Path, pip_visual_review: Path | None = None) -> list[d
 
 
 def add_tracks(project, draft) -> None:
-    project.script.add_track(draft.TrackType.video, "MainVisual")
-    project.script.add_track(draft.TrackType.video, "B_Roll", mute=True, relative_index=1)
-    project.script.add_track(draft.TrackType.video, "SpeakerPiP", relative_index=2)
-    project.script.add_track(draft.TrackType.audio, "Narration")
-    project.script.add_track(draft.TrackType.audio, "SFX")
-    project.script.add_track(draft.TrackType.effect, "Effects")
-    project.script.add_track(draft.TrackType.effect, "CharacterEffects")
-    project.script.add_track(draft.TrackType.text, "Subtitles")
+    project.script.add_track(draft.TrackType.video, "MainVisual", absolute_index=0)
+    project.script.add_track(draft.TrackType.video, "B_Roll", mute=True, absolute_index=1)
+    project.script.add_track(draft.TrackType.video, "SpeakerPiP", absolute_index=2)
+    project.script.add_track(draft.TrackType.filter, "Filters", absolute_index=3)
+    project.script.add_track(draft.TrackType.audio, "Narration", absolute_index=4)
+    project.script.add_track(draft.TrackType.audio, "SFX", absolute_index=5)
+    project.script.add_track(draft.TrackType.effect, "Effects", absolute_index=6)
+    project.script.add_track(draft.TrackType.effect, "CharacterEffects", absolute_index=7)
+    project.script.add_track(draft.TrackType.sticker, "Stickers", absolute_index=8)
+    project.script.add_track(draft.TrackType.text, "Subtitles", absolute_index=9)
 
 
 def add_caption(project, draft, entry: dict, presentation: dict) -> None:
@@ -242,6 +247,69 @@ def materialize_effects(project, draft, asset_plan: dict) -> tuple[int, int]:
     return len(visual_effects), len(character_effects)
 
 
+def load_finish_plan(path: Path, kind: str) -> dict:
+    payload = load_json(path.resolve())
+    review = payload.get("ai_review", {})
+    if not isinstance(review, dict) or review.get("status") != "approved":
+        raise ValueError(f"{kind} plan must have ai_review.status=approved")
+    items = payload.get(kind, [])
+    if not isinstance(items, list):
+        raise ValueError(f"{kind} plan requires a {kind} array")
+    if not items and not str(payload.get("skip_reason", "")).strip():
+        raise ValueError(f"empty {kind} plan requires a specific skip_reason")
+    return payload
+
+
+def materialize_filters(project, draft, plan: dict) -> int:
+    previous_end = 0.0
+    for index, item in enumerate(sorted(plan.get("filters", []), key=lambda value: float(value["start"])), start=1):
+        start, duration = float(item["start"]), float(item["duration"])
+        intensity = float(item["intensity"])
+        if start < 0 or duration <= 0 or not 5.0 <= intensity <= 60.0:
+            raise ValueError(f"filter {index} has invalid timing or intensity")
+        if start < previous_end - 0.000001:
+            raise ValueError(f"filter {index} overlaps the previous Filters segment")
+        if item.get("status") != "approved" or not str(item.get("visual_evidence", "")).strip():
+            raise ValueError(f"filter {index} requires approved status and frame-grounded visual_evidence")
+        meta = draft.FilterType.from_name(str(item["name"]))
+        requested_resource = str(item.get("resource_id", "")).strip()
+        if requested_resource and requested_resource != meta.value.resource_id:
+            raise ValueError(f"filter {index} resource_id does not match the resolved JianYing filter")
+        project.script.add_filter(
+            meta,
+            draft.Timerange(round(start * 1_000_000), round(duration * 1_000_000)),
+            "Filters",
+            intensity=intensity,
+        )
+        previous_end = start + duration
+    return len(plan.get("filters", []))
+
+
+def materialize_stickers(project, draft, plan: dict) -> int:
+    for index, item in enumerate(plan.get("stickers", []), start=1):
+        start, duration = float(item["start"]), float(item["duration"])
+        resource_id = str(item.get("resource_id", "")).strip()
+        if not resource_id or start < 0 or duration <= 0:
+            raise ValueError(f"sticker {index} requires a real resource_id and valid timing")
+        if item.get("status") != "approved" or not str(item.get("visual_evidence", "")).strip():
+            raise ValueError(f"sticker {index} requires approved status and frame-grounded visual_evidence")
+        if item.get("collision_review", {}).get("status") != "passed":
+            raise ValueError(f"sticker {index} requires a passed collision_review")
+        segment = draft.StickerSegment(
+            resource_id,
+            draft.Timerange(round(start * 1_000_000), round(duration * 1_000_000)),
+            clip_settings=draft.ClipSettings(
+                scale_x=float(item.get("scale", 1.0)),
+                scale_y=float(item.get("scale", 1.0)),
+                transform_x=float(item.get("transform_x", 0.0)),
+                transform_y=float(item.get("transform_y", 0.0)),
+                rotation=float(item.get("rotation", 0.0)),
+            ),
+        )
+        project.script.add_segment(segment, "Stickers")
+    return len(plan.get("stickers", []))
+
+
 def main() -> int:
     configure_console_output()
     parser = argparse.ArgumentParser(description=__doc__)
@@ -254,6 +322,9 @@ def main() -> int:
     parser.add_argument("--pip-visual-review", type=Path, help="Optional face-detection review generated from the final rough-cut visual")
     parser.add_argument("--caption-layout-review", type=Path, required=True, help="Frame-checked caption layout review generated from the final rough-cut visual")
     parser.add_argument("--asset-plan", type=Path, help="Approved scene/character effect plan")
+    parser.add_argument("--filter-plan", type=Path, required=True, help="Approved portrait filter/beautification plan; an empty plan needs a specific skip_reason")
+    parser.add_argument("--sticker-plan", type=Path, required=True, help="Approved content-aware sticker plan; an empty plan needs a specific skip_reason")
+    parser.add_argument("--finish-catalog", type=Path, required=True, help="Local JianYing filter/sticker catalog used to prove resource IDs")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--rebuild-empty-skeleton", action="store_true", help="Explicitly rebuild the verified empty skeleton in one editable session")
     args = parser.parse_args()
@@ -269,6 +340,7 @@ def main() -> int:
             paths.append(args.pip_visual_review)
         if args.asset_plan:
             paths.append(args.asset_plan)
+        paths.extend([args.filter_plan, args.sticker_plan, args.finish_catalog])
         for path in paths:
             if not path.resolve().is_file():
                 raise FileNotFoundError(path)
@@ -283,6 +355,7 @@ def main() -> int:
         pip_visual_review_payload = load_json(args.pip_visual_review.resolve()) if args.pip_visual_review else None
         broll = load_broll_plan(args.broll_plan.resolve(), args.pip_visual_review.resolve() if args.pip_visual_review else None) if args.broll_plan else []
         entries = read_srt(captions)
+        expected_duration = max(entry["end"] for entry in entries)
         caption_layout_review = load_json(args.caption_layout_review.resolve())
         if caption_layout_review.get("status") != "succeeded":
             raise ValueError("caption visual layout review did not pass")
@@ -340,10 +413,25 @@ def main() -> int:
             broll_segments=broll,
             layout_review=caption_layout_review,
         )
+        asset_plan = load_json(args.asset_plan.resolve()) if args.asset_plan else {}
+        filter_plan = load_finish_plan(args.filter_plan, "filters")
+        sticker_plan = load_finish_plan(args.sticker_plan, "stickers")
+        finish_catalog = load_json(args.finish_catalog.resolve())
+        for label, finish_plan in (("filter", filter_plan), ("sticker", sticker_plan)):
+            plan_duration = float(finish_plan.get("timeline_duration", -1))
+            if abs(plan_duration - expected_duration) > 0.05:
+                raise ValueError(f"{label} plan uses a stale timeline duration: {plan_duration:.3f}s != {expected_duration:.3f}s")
+        plan_report = validate_filter_plan(filter_plan, finish_catalog)
+        if not plan_report["valid"]:
+            raise ValueError("filter plan validation failed: " + "; ".join(plan_report["errors"]))
+        plan_report = validate_sticker_plan(sticker_plan, finish_catalog)
+        if not plan_report["valid"]:
+            raise ValueError("sticker plan validation failed: " + "; ".join(plan_report["errors"]))
+        filter_count = materialize_filters(project, draft, filter_plan)
+        visual_effect_count, character_effect_count = materialize_effects(project, draft, asset_plan)
+        sticker_count = materialize_stickers(project, draft, sticker_plan)
         for entry, style in zip(entries, presentation):
             add_caption(project, draft, entry, style)
-        asset_plan = load_json(args.asset_plan.resolve()) if args.asset_plan else {}
-        visual_effect_count, character_effect_count = materialize_effects(project, draft, asset_plan)
         materialized_review_path = args.output.resolve().parent / "pip_visual_review.materialized.json"
         if pip_visual_review_payload is not None:
             pip_visual_review_payload["materialization"] = {
@@ -356,7 +444,6 @@ def main() -> int:
             )
         saved = project.save()
         document = load_json(Path(saved["draft_path"]) / "draft_info.json")
-        expected_duration = max(entry["end"] for entry in entries)
         reports = {
             "captions": validate_captions(
                 document,
@@ -373,6 +460,8 @@ def main() -> int:
                 require_visual_review=bool(args.pip_visual_review),
             ),
             "effects": validate_effects(document, visual_effect_count, character_effect_count),
+            "filters": validate_filters(document, filter_plan, expected_count=filter_count),
+            "stickers": validate_stickers(document, sticker_plan, expected_count=sticker_count),
         }
         errors = [f"{name}: " + "; ".join(report["errors"]) for name, report in reports.items() if report["status"] != "passed"]
         report = {

@@ -78,6 +78,8 @@ def main() -> int:
     parser.add_argument("--export-audit-output", type=Path, help="Optional post-export QC JSON path; defaults to output-dir/export_visual_qc.json")
     parser.add_argument("--prepare-speaker-pip", action="store_true", help="Run only the optional SpeakerPiP analysis/review stage after creating the draft skeleton; it writes review artifacts but does not modify the draft")
     parser.add_argument("--approved-asset-plan", type=Path, help="AI-approved selected asset plan used only with --materialize-draft")
+    parser.add_argument("--approved-filter-plan", type=Path, help="AI-approved portrait filter plan used only with --materialize-draft")
+    parser.add_argument("--approved-sticker-plan", type=Path, help="AI-approved content-aware sticker plan used only with --materialize-draft")
     parser.add_argument("--materialize-draft", action="store_true", help="Write the approved single-speaker plan into the new validated JianYing draft")
     parser.add_argument("--draft-name", help="New JianYing draft name; required with --beats to create the validated track skeleton")
     parser.add_argument("--draft-width", type=int, default=1080)
@@ -108,6 +110,8 @@ def main() -> int:
         raise ValueError("--beats and --draft-name must be supplied together so analysis starts from a validated draft skeleton")
     if args.materialize_draft and (not args.beats or not args.approved_asset_plan):
         raise ValueError("--materialize-draft requires --beats and --approved-asset-plan")
+    if args.materialize_draft and (not args.approved_filter_plan or not args.approved_sticker_plan):
+        raise ValueError("--materialize-draft requires reviewed --approved-filter-plan and --approved-sticker-plan; an empty approved plan must include a specific skip_reason")
     if args.materialize_draft and not args.render_rough_cut:
         raise ValueError("--materialize-draft requires --render-rough-cut so it can import validated silent visual and narration artifacts")
     if args.prepare_speaker_pip and (not args.render_rough_cut or not args.beats):
@@ -115,7 +119,7 @@ def main() -> int:
     jianying_python = args.jianying_python or Path(os.environ.get("JY_PYTHON", "").strip() or sys.executable)
     if not jianying_python.is_file():
         raise FileNotFoundError(f"JianYing Python executable not found: {jianying_python}")
-    for path in (args.srt, args.speech_timeline, args.caption_review, args.broll_plan, args.approved_asset_plan, args.speaker_pip_visual_decisions):
+    for path in (args.srt, args.speech_timeline, args.caption_review, args.broll_plan, args.approved_asset_plan, args.approved_filter_plan, args.approved_sticker_plan, args.speaker_pip_visual_decisions):
         if path and not path.is_file():
             raise FileNotFoundError(path)
     if args.exported_video and not args.exported_video.is_file():
@@ -336,6 +340,26 @@ def main() -> int:
             "--beats", str(args.beats), "--catalog", str(catalog_json), "--style", args.style, "--output", str(asset_plan),
         ])
 
+    finish_catalog = None
+    filter_plan_template = None
+    sticker_plan_template = None
+    if args.beats:
+        finish_catalog = args.output_dir / "visual_finish_catalog.json"
+        finish_catalog_command = [
+            sys.executable, str(Path(__file__).resolve().with_name("visual_finish_director.py")), "catalog",
+            "--output", str(finish_catalog),
+        ]
+        if args.drafts_root:
+            finish_catalog_command.extend(["--drafts-root", str(args.drafts_root.resolve())])
+        run(finish_catalog_command)
+        run([
+            sys.executable, str(Path(__file__).resolve().with_name("visual_finish_director.py")), "plan",
+            "--beats", str(args.beats.resolve()), "--catalog", str(finish_catalog),
+            "--output-dir", str(args.output_dir),
+        ])
+        filter_plan_template = args.output_dir / "filter_plan.template.json"
+        sticker_plan_template = args.output_dir / "sticker_plan.template.json"
+
     draft_assembly = None
     draft_assembly_qc = None
     pip_visual_review = None
@@ -370,6 +394,17 @@ def main() -> int:
         ])
         if read_json(asset_validation).get("valid") is not True:
             raise RuntimeError("asset-plan creative coverage or AI-review QC did not pass")
+        filter_validation = args.output_dir / "filter_plan.qc.json"
+        sticker_validation = args.output_dir / "sticker_plan.qc.json"
+        for kind, plan_path, output_path in (
+            ("filters", args.approved_filter_plan, filter_validation),
+            ("stickers", args.approved_sticker_plan, sticker_validation),
+        ):
+            run([
+                sys.executable, str(Path(__file__).resolve().with_name("visual_finish_director.py")), "validate",
+                "--kind", kind, "--plan", str(plan_path.resolve()), "--catalog", str(finish_catalog),
+                "--output", str(output_path),
+            ])
         draft_assembly_qc = args.output_dir / "draft_assembly.qc.json"
         caption_layout_review = args.output_dir / "caption_layout_review.json"
         run([
@@ -385,6 +420,9 @@ def main() -> int:
             "--pip-visual-review", str(pip_visual_review),
             "--caption-layout-review", str(caption_layout_review),
             "--asset-plan", str(args.approved_asset_plan.resolve()), "--output", str(draft_assembly_qc),
+            "--filter-plan", str(args.approved_filter_plan.resolve()),
+            "--sticker-plan", str(args.approved_sticker_plan.resolve()),
+            "--finish-catalog", str(finish_catalog),
             "--rebuild-empty-skeleton",
         ]
         if args.drafts_root:
@@ -441,6 +479,11 @@ def main() -> int:
         "asset_catalog": str(catalog_json),
         "asset_plan": str(asset_plan) if asset_plan else None,
         "asset_plan_qc": str(asset_validation) if args.materialize_draft else None,
+        "visual_finish_catalog": str(finish_catalog) if finish_catalog else None,
+        "filter_plan_template": str(filter_plan_template) if filter_plan_template else None,
+        "sticker_plan_template": str(sticker_plan_template) if sticker_plan_template else None,
+        "filter_plan_qc": str(filter_validation) if args.materialize_draft else None,
+        "sticker_plan_qc": str(sticker_validation) if args.materialize_draft else None,
         "draft_assembly": draft_assembly,
         "draft_assembly_qc": str(draft_assembly_qc) if draft_assembly_qc else None,
         "pip_visual_review": str(pip_visual_review) if pip_visual_review else None,
@@ -450,7 +493,7 @@ def main() -> int:
         "speaker_pip_visual_decisions": str(args.speaker_pip_visual_decisions.resolve()) if args.speaker_pip_visual_decisions else None,
         "exported_video": str(args.exported_video.resolve()) if args.exported_video else None,
         "export_audit": str(export_audit) if export_audit else None,
-        "next_step": "Review asset selections and any SpeakerPiP candidate composites, then rerun with --materialize-draft and --approved-asset-plan to write a validated editable draft; otherwise the empty skeleton remains unchanged.",
+        "next_step": "Review effect selections, filter/sticker templates, and any SpeakerPiP candidate composites. Then rerun with --materialize-draft plus all three approved plans; otherwise the ten-track skeleton remains unchanged.",
     }
     print("RESULT: " + json.dumps(result, ensure_ascii=False))
     return 0

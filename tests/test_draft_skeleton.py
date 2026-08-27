@@ -28,10 +28,12 @@ class DraftSkeletonTests(unittest.TestCase):
             track("video", "MainVisual"),
             track("video", "B_Roll", muted=True),
             track("video", "SpeakerPiP"),
+            track("filter", "Filters"),
             track("audio", "Narration"),
             track("audio", "SFX"),
             track("effect", "Effects"),
             track("effect", "CharacterEffects"),
+            track("sticker", "Stickers"),
             track("text", "Subtitles"),
         ]}
 
@@ -48,12 +50,19 @@ class DraftSkeletonTests(unittest.TestCase):
 
     def test_rejects_wrong_type_or_materialized_track(self):
         document = self.valid_document()
-        document["tracks"][6]["type"] = "video"
-        document["tracks"][7]["segments"] = [{"material_id": "caption"}]
+        document["tracks"][7]["type"] = "video"
+        document["tracks"][9]["segments"] = [{"material_id": "caption"}]
         report = skeleton.validate(document)
         self.assertEqual(report["status"], "failed")
         self.assertTrue(any("CharacterEffects" in error for error in report["errors"]))
         self.assertTrue(any("Subtitles" in error for error in report["errors"]))
+
+    def test_rejects_wrong_track_order(self):
+        document = self.valid_document()
+        document["tracks"][3], document["tracks"][4] = document["tracks"][4], document["tracks"][3]
+        report = skeleton.validate(document)
+        self.assertEqual(report["status"], "failed")
+        self.assertTrue(any("track order" in error for error in report["errors"]))
 
 
 if __name__ == "__main__":
