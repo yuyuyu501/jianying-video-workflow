@@ -11,7 +11,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-from caption_presentation import available_flower_effects, plan_caption_styles
+from caption_design_director import validate as validate_caption_plan
+from caption_presentation import KEYWORD_COLORS, available_flower_effects, materialization_plan
 from validate_draft_captions import read_srt, validate as validate_captions
 from validate_draft_effects import validate as validate_effects
 from validate_draft_filters import validate as validate_filters
@@ -196,30 +197,46 @@ def add_tracks(project, draft) -> None:
     project.script.add_track(draft.TrackType.effect, "CharacterEffects", absolute_index=7)
     project.script.add_track(draft.TrackType.sticker, "Stickers", absolute_index=8)
     project.script.add_track(draft.TrackType.text, "Subtitles", absolute_index=9)
+    project.script.add_track(draft.TrackType.text, "CaptionHighlights", absolute_index=10)
+    project.script.add_track(draft.TrackType.text, "CaptionCards", absolute_index=11)
+    project.script.add_track(draft.TrackType.text, "Disclaimer", absolute_index=12)
 
 
 def add_caption(project, draft, entry: dict, presentation: dict) -> None:
-    variant = presentation["variant"]
+    variant = presentation["presentation"]
     size = float(presentation["font_size"])
-    if variant == "alert_impact":
-        style = draft.TextStyle(size=size, bold=True, color=(1.0, 0.18, 0.16), align=1, auto_wrapping=True, max_line_width=0.88)
-        border = draft.TextBorder(color=(1.0, 1.0, 1.0), alpha=1.0, width=62.0)
-        background = None
-    elif variant == "bubble":
+    if variant == "bubble":
         style = draft.TextStyle(size=size, bold=True, color=(0.08, 0.05, 0.04), align=1, auto_wrapping=True, max_line_width=0.84)
-        border = draft.TextBorder(color=(1.0, 1.0, 1.0), alpha=0.85, width=28.0)
+        border = draft.TextBorder(color=(0.0, 0.0, 0.0), alpha=0.9, width=36.0)
         background = draft.TextBackground(color="#FFE34D", alpha=0.98, round_radius=0.95, height=0.27, width=0.92)
     elif variant == "flower":
-        style = draft.TextStyle(size=size, bold=True, color=(1.0, 1.0, 1.0), align=1, auto_wrapping=True, max_line_width=0.88)
+        style = draft.TextStyle(size=size, bold=True, color=(1.0, 0.86, 0.10), align=1, auto_wrapping=True, max_line_width=0.88)
         border = draft.TextBorder(color=(0.08, 0.02, 0.02), alpha=1.0, width=68.0)
         background = None
     else:
-        style = draft.TextStyle(size=size, bold=True, color=(1.0, 1.0, 1.0), align=1, auto_wrapping=True, max_line_width=0.88)
-        border = draft.TextBorder(color=(0.0, 0.0, 0.0), alpha=1.0, width=68.0)
+        style = draft.TextStyle(size=size, bold=True, color=(1.0, 0.86, 0.10), align=1, auto_wrapping=True, max_line_width=0.88)
+        border = draft.TextBorder(color=(0.0, 0.0, 0.0), alpha=1.0, width=74.0)
         background = None
+    rich_spans = []
+    keyword_spans = sorted(presentation.get("keyword_spans", []), key=lambda span: int(span["start"]))
+    if keyword_spans:
+        cursor = 0
+        for span in keyword_spans:
+            start, end = int(span["start"]), int(span["end"])
+            if cursor < start:
+                rich_spans.append(draft.RichTextSpan(cursor, start, style=style))
+            rich_spans.append(draft.RichTextSpan(
+                start, end, color=KEYWORD_COLORS[str(span["color"])],
+                size=size * float(span["size_scale"]), bold=True,
+            ))
+            cursor = end
+        if cursor < len(entry["text"]):
+            rich_spans.append(draft.RichTextSpan(cursor, len(entry["text"]), style=style))
     segment = draft.TextSegment(
         entry["text"], draft.Timerange(round(entry["start"] * 1_000_000), round((entry["end"] - entry["start"]) * 1_000_000)),
         style=style, border=border, background=background,
+        shadow=draft.TextShadow(color=(0.0, 0.0, 0.0), alpha=0.72, diffuse=18.0, distance=3.0, angle=-45.0),
+        rich_spans=rich_spans,
         clip_settings=draft.ClipSettings(transform_y=presentation["transform_y"]),
     )
     if variant == "flower":
@@ -231,6 +248,74 @@ def add_caption(project, draft, entry: dict, presentation: dict) -> None:
         project.script.materials.filters.append(segment.effect)
         segment.effect = None
     project.script.add_segment(segment, "Subtitles")
+
+
+def add_caption_overlays(project, draft, entry: dict, presentation: dict) -> tuple[int, int]:
+    timerange = draft.Timerange(
+        round(entry["start"] * 1_000_000),
+        round((entry["end"] - entry["start"]) * 1_000_000),
+    )
+    highlight_count = 0
+    card_count = 0
+    highlight = presentation.get("highlight", {})
+    if highlight.get("enabled"):
+        text = str(highlight.get("text", "")).strip()
+        if not text:
+            raise ValueError(f"caption cue {int(presentation['index']) + 1} enables an empty highlight")
+        segment = draft.TextSegment(
+            text, timerange,
+            style=draft.TextStyle(size=13.0, bold=True, color=(0.05, 0.04, 0.02), align=1, auto_wrapping=True, max_line_width=0.84),
+            border=draft.TextBorder(color=(0.0, 0.0, 0.0), alpha=1.0, width=18.0),
+            background=draft.TextBackground(color="#FFD928", alpha=1.0, round_radius=0.12, height=0.34, width=0.96),
+            clip_settings=draft.ClipSettings(
+                transform_x=float(highlight.get("transform_x", 0.0)),
+                transform_y=float(highlight.get("transform_y", 0.38)),
+            ),
+        )
+        project.script.add_segment(segment, "CaptionHighlights")
+        highlight_count = 1
+    card = presentation.get("card", {})
+    if card.get("enabled"):
+        title = str(card.get("title", "")).strip()
+        body = str(card.get("body", "")).strip()
+        if not title or not body:
+            raise ValueError(f"caption cue {int(presentation['index']) + 1} enables an incomplete card")
+        card_text = f"{title}\n{body}"
+        card_style = draft.TextStyle(size=10.4, bold=True, color=(0.08, 0.07, 0.05), align=1, auto_wrapping=True, max_line_width=0.78, line_spacing=10)
+        segment = draft.TextSegment(
+            card_text, timerange,
+            style=card_style,
+            background=draft.TextBackground(color="#FFFFFF", alpha=0.96, round_radius=0.18, height=0.48, width=1.0),
+            shadow=draft.TextShadow(color=(0.0, 0.0, 0.0), alpha=0.35, diffuse=26.0, distance=4.0, angle=-45.0),
+            rich_spans=[
+                draft.RichTextSpan(0, len(title), color=(0.96, 0.46, 0.02), size=12.2, bold=True),
+                draft.RichTextSpan(len(title), len(card_text), style=card_style),
+            ],
+            clip_settings=draft.ClipSettings(
+                transform_x=float(card.get("transform_x", 0.0)),
+                transform_y=float(card.get("transform_y", 0.02)),
+            ),
+        )
+        project.script.add_segment(segment, "CaptionCards")
+        card_count = 1
+    return highlight_count, card_count
+
+
+def add_disclaimer(project, draft, disclaimer: dict) -> int:
+    if not disclaimer.get("enabled"):
+        return 0
+    text = str(disclaimer.get("text", "")).strip()
+    start, end = float(disclaimer.get("start", 0)), float(disclaimer.get("end", 0))
+    if not text or start < 0 or end <= start:
+        raise ValueError("enabled disclaimer requires text and a valid start/end")
+    segment = draft.TextSegment(
+        text, draft.Timerange(round(start * 1_000_000), round((end - start) * 1_000_000)),
+        style=draft.TextStyle(size=4.8, color=(1.0, 1.0, 1.0), align=1, auto_wrapping=True, max_line_width=0.84),
+        border=draft.TextBorder(color=(0.0, 0.0, 0.0), alpha=0.85, width=48.0),
+        clip_settings=draft.ClipSettings(transform_y=-0.82),
+    )
+    project.script.add_segment(segment, "Disclaimer")
+    return 1
 
 
 def materialize_effects(project, draft, asset_plan: dict) -> tuple[int, int]:
@@ -321,6 +406,7 @@ def main() -> int:
     parser.add_argument("--broll-plan", type=Path, help="Optional approved B-roll plan")
     parser.add_argument("--pip-visual-review", type=Path, help="Optional face-detection review generated from the final rough-cut visual")
     parser.add_argument("--caption-layout-review", type=Path, required=True, help="Frame-checked caption layout review generated from the final rough-cut visual")
+    parser.add_argument("--caption-plan", type=Path, required=True, help="AI-approved semantic caption design plan")
     parser.add_argument("--asset-plan", type=Path, help="Approved scene/character effect plan")
     parser.add_argument("--filter-plan", type=Path, required=True, help="Approved portrait filter/beautification plan; an empty plan needs a specific skip_reason")
     parser.add_argument("--sticker-plan", type=Path, required=True, help="Approved content-aware sticker plan; an empty plan needs a specific skip_reason")
@@ -333,7 +419,7 @@ def main() -> int:
     try:
         if not args.rebuild_empty_skeleton:
             raise ValueError("--rebuild-empty-skeleton is required; materialization never overwrites a populated draft")
-        paths = [args.visual, args.narration, args.captions, args.caption_layout_review]
+        paths = [args.visual, args.narration, args.captions, args.caption_layout_review, args.caption_plan]
         if args.broll_plan:
             paths.append(args.broll_plan)
         if args.pip_visual_review:
@@ -362,6 +448,10 @@ def main() -> int:
         layouts = caption_layout_review.get("layouts", [])
         if not isinstance(layouts, list) or len(layouts) != len(entries):
             raise ValueError("caption visual layout review does not cover every SRT entry")
+        caption_plan = load_json(args.caption_plan.resolve())
+        caption_plan_report = validate_caption_plan(caption_plan, entries)
+        if caption_plan_report["status"] != "passed":
+            raise ValueError("caption design plan validation failed: " + "; ".join(caption_plan_report["errors"]))
         editor_skill = locate_editor_skill()
         sys.path.insert(0, str(editor_skill / "scripts"))
         sys.path.insert(0, str(editor_skill / "scripts" / "vendor"))
@@ -407,12 +497,7 @@ def main() -> int:
                 )
                 project.script.add_segment(segment, "SpeakerPiP")
         flowers = available_flower_effects(editor_skill / "assets" / "artistEffect")
-        presentation = plan_caption_styles(
-            entries,
-            available_effect_ids=flowers,
-            broll_segments=broll,
-            layout_review=caption_layout_review,
-        )
+        presentation = materialization_plan(caption_plan, available_effect_ids=flowers)
         asset_plan = load_json(args.asset_plan.resolve()) if args.asset_plan else {}
         filter_plan = load_finish_plan(args.filter_plan, "filters")
         sticker_plan = load_finish_plan(args.sticker_plan, "stickers")
@@ -430,8 +515,14 @@ def main() -> int:
         filter_count = materialize_filters(project, draft, filter_plan)
         visual_effect_count, character_effect_count = materialize_effects(project, draft, asset_plan)
         sticker_count = materialize_stickers(project, draft, sticker_plan)
+        highlight_count = 0
+        card_count = 0
         for entry, style in zip(entries, presentation):
             add_caption(project, draft, entry, style)
+            added_highlights, added_cards = add_caption_overlays(project, draft, entry, style)
+            highlight_count += added_highlights
+            card_count += added_cards
+        disclaimer_count = add_disclaimer(project, draft, caption_plan.get("disclaimer", {}))
         materialized_review_path = args.output.resolve().parent / "pip_visual_review.materialized.json"
         if pip_visual_review_payload is not None:
             pip_visual_review_payload["materialization"] = {
@@ -449,9 +540,11 @@ def main() -> int:
                 document,
                 entries,
                 "Subtitles",
-                require_style_variation=True,
+                require_style_variation=False,
                 caption_layout_review=caption_layout_review,
                 require_visual_layout_review=True,
+                caption_plan=caption_plan,
+                require_semantic_design=True,
             ),
             "narration": validate_narration(document, "Narration", expected_duration),
             "pip": validate_pip(
@@ -469,6 +562,11 @@ def main() -> int:
             "draft_name": args.draft_name,
             "draft_path": saved["draft_path"],
             "caption_presentation": presentation,
+            "caption_plan": str(args.caption_plan.resolve()),
+            "caption_plan_validation": caption_plan_report,
+            "caption_highlight_segments": highlight_count,
+            "caption_card_segments": card_count,
+            "disclaimer_segments": disclaimer_count,
             "caption_layout_review": str(args.caption_layout_review.resolve()),
             "pip_visual_review": str(materialized_review_path) if pip_visual_review_payload is not None else None,
             "broll_segments": len(broll),

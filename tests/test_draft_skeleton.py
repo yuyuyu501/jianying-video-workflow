@@ -35,6 +35,9 @@ class DraftSkeletonTests(unittest.TestCase):
             track("effect", "CharacterEffects"),
             track("sticker", "Stickers"),
             track("text", "Subtitles"),
+            track("text", "CaptionHighlights"),
+            track("text", "CaptionCards"),
+            track("text", "Disclaimer"),
         ]}
 
     def test_accepts_empty_named_track_skeleton(self):

@@ -23,14 +23,16 @@ video-understand (external)
 -> caption QC: rough-cut speech coverage, source mapping, text completeness, and reference-script coverage
 -> video-understand (final-timeline representative frames)
 -> optional SpeakerPiP analysis/review (only when source mix requests it)
--> new JianYing draft skeleton + named-track QC, including empty Filters, SpeakerPiP, and Stickers tracks
+-> new JianYing draft skeleton + named-track QC, including four dedicated text tracks
+-> representative caption frames + semantic caption-plan template
+-> AI review of role, keyword spans, hierarchy, safe position, and collisions for every caption cue
 -> jianying-asset-director (bundled)
 -> scene-effect/SFX shortlist and AI selection
 -> character-effect shortlist and AI selection
 -> portrait filter/beautification shortlist, frame-grounded selection, and Filters-track QC
 -> content-aware sticker shortlist, placement/collision review, and Stickers-track QC
 -> jianying-editor (external)
--> materialize silent visual, filters, narration, B-roll, optional PiP, effects, stickers, and captions on the named tracks
+-> materialize silent visual, filters, narration, B-roll, optional PiP, effects, stickers, rich-text captions, highlights, cards, and optional disclaimer on the named tracks
 -> per-stage and post-build composition QC
 -> optional user-exported MP4 pixel QC (black frames, audio stream, subtitle timing, PiP face/circle render, OCR native-text review)
 ```
@@ -174,7 +176,7 @@ timestamped visual beats on that final timeline and pass them with `--beats`
 and a new `--draft-name`. The workflow first creates a draft skeleton and
 stops unless its empty, named tracks pass QC: `MainVisual`, muted `B_Roll`,
 `SpeakerPiP`, `Filters`, `Narration`, `SFX`, `Effects`, `CharacterEffects`,
-`Stickers`, and `Subtitles`. It refuses
+`Stickers`, `Subtitles`, `CaptionHighlights`, `CaptionCards`, and `Disclaimer`. It refuses
 to reuse a draft name unless `--overwrite` is explicitly passed to the skeleton
 script. This separates track structure from creative edits.
 
@@ -222,6 +224,23 @@ long reviewed text at commas, pauses, and sentence punctuation, removes those
 display-only punctuation marks (default 18 non-punctuation characters), and
 apportions each existing time range without gaps. This keeps readable short
 captions without remapping raw-camera time.
+
+Caption design is a separate reviewed stage after final-timeline SRT and visual
+layout analysis. Run with `--prepare-caption-design` to save one representative
+frame per cue in `caption-layout-frames` and create
+`caption_plan.template.json`. The template's automatic semantic suggestions are
+not approval. An AI or human reviewer must inspect every referenced frame,
+confirm or revise `role`, `keyword_spans`, position, chapter/card treatment, and
+collision fields, then set each cue and the overall `ai_review` to approved.
+Assembly requires that reviewed file through `--approved-caption-plan`.
+
+Do not rotate caption styles by cue index. Keep a stable yellow-text/black-outline
+base for at least 65% of cues. Prefer red/orange rich-text spans for numbers,
+negation, danger, actions, and medicine names. Keep flower/bubble treatments
+below 15%, never use three consecutively, place step headings on
+`CaptionHighlights`, place correct-method summaries on `CaptionCards`, and use
+`Disclaimer` only when the job calls for a persistent disclosure. Missing visual
+evidence or a failed collision review blocks materialization.
 
 When the speaker is following a supplied script, pass that script to the rough
 cut stage and review the generated script-alignment report. The rough cut must
@@ -331,9 +350,13 @@ Before handing off the draft, verify:
 - `caption_layout_review.json` must inspect representative rough-cut frames for
   every SRT cue before draft assembly; its safe zone is materialized as the
   subtitle transform and then compared back against the saved draft;
-- captions, PiP, titles, and effects do not collide; captions exactly match
-  the SRT, use high-frequency expressive variants (large outlined text, bubble,
-  and local flower text when available), and have multiple safe positions.
+- `caption_plan.qc.json` passed: every SRT cue has an approved semantic role,
+  concrete frame-grounded evidence, passed face/PiP/native-text/key-action/UI
+  collision review, valid non-overlapping keyword ranges, and approved hierarchy;
+- captions, PiP, titles, and effects do not collide; `Subtitles` exactly matches
+  the SRT and preserves a stable yellow/black baseline, every rich-text style
+  covers all characters, and planned highlights/cards/disclaimer exactly match
+  their dedicated tracks.
 
 Do not use `JyProject.add_effect_simple` to create a JianYing effect track: it
 can leave timeline placeholders without a `video_effect` material. Resolve the
@@ -370,7 +393,11 @@ python scripts/validate_draft_narration.py --draft-name "DraftName" --expected-d
 Then verify that the `Subtitles` track exactly reproduces the approved SRT:
 
 ```powershell
-python scripts/validate_draft_captions.py --draft-name "DraftName" --srt "work\captions\captions.srt"
+python scripts/validate_draft_captions.py --draft-name "DraftName" `
+  --srt "work\captions\captions.srt" `
+  --caption-layout-review "work\caption_layout_review.json" `
+  --caption-plan "work\caption_plan.approved.json" `
+  --require-visual-layout-review --require-semantic-design
 ```
 
 Use `scripts/assemble_draft.py` only after the empty skeleton, caption QC, and
@@ -404,6 +431,7 @@ python scripts/assemble_draft.py --draft-name "DraftName" `
   --broll-plan "work\broll_plan.json" `
   --pip-visual-review "work\pip_visual_review.json" `
   --caption-layout-review "work\caption_layout_review.json" `
+  --caption-plan "work\caption_plan.approved.json" `
   --asset-plan "work\selected_plan.json" `
   --filter-plan "work\filter_plan.json" `
   --sticker-plan "work\sticker_plan.json" `
@@ -419,12 +447,14 @@ candidate composites. Only a generated candidate marked `safe` may be chosen:
 {"status":"approved","decisions":[{"segment_index":1,"status":"approved","position":"middle_right","reason":"The head is complete and no title, diagram, or subtitle is obscured."}]}
 ```
 
-It rotates basic lower captions, middle warning captions, rounded-background
-"bubble" captions, and sparse locally cached flower text. It uses only flower
-IDs found in `artistEffect`; unavailable flower resources fall back to the
-basic presentation. The main runner exposes the same step only with explicit
+It materializes the approved semantic plan: stable yellow outlined captions,
+sentence-internal rich-text emphasis, sparse approved bubble/flower treatment,
+chapter bars, information cards, and an optional disclaimer. It uses only flower
+IDs found in `artistEffect`; unavailable flower resources fall back to keyword
+or base presentation. The main runner exposes the same step only with explicit
 `--materialize-draft --broll-plan ... --approved-asset-plan ...
---approved-filter-plan ... --approved-sticker-plan ...`; it currently
+--approved-filter-plan ... --approved-sticker-plan ...
+--approved-caption-plan ...`; it currently
 requires one narration source so the PiP can reference that source's validated
 silent visual. Verify PiP explicitly:
 

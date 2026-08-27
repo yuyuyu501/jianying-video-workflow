@@ -197,6 +197,57 @@ class CaptionQcTests(unittest.TestCase):
         self.assertEqual(report["status"], "passed", report["errors"])
         self.assertEqual(report["style_types"], ["base", "flower"])
 
+    def test_semantic_caption_validation_checks_rich_text_and_dedicated_tracks(self):
+        yellow = {"fill": {"content": {"solid": {"color": [1.0, 0.86, 0.1]}}}, "range": [0, 2]}
+        red = {"fill": {"content": {"solid": {"color": [1.0, 0.12, 0.1]}}}, "range": [2, 6]}
+        document = {
+            "materials": {"texts": [
+                {"id": "one", "content": json.dumps({"text": "普通字幕", "styles": [{**yellow, "range": [0, 4]}]}, ensure_ascii=False)},
+                {"id": "two", "content": json.dumps({"text": "超过15分钟", "styles": [yellow, red]}, ensure_ascii=False)},
+            ]},
+            "tracks": [
+                {"type": "text", "name": "Subtitles", "segments": [
+                    {"material_id": "one", "target_timerange": {"start": 0, "duration": 1_000_000}},
+                    {"material_id": "two", "target_timerange": {"start": 1_000_000, "duration": 1_000_000}},
+                ]},
+                {"type": "text", "name": "CaptionHighlights", "segments": []},
+                {"type": "text", "name": "CaptionCards", "segments": []},
+                {"type": "text", "name": "Disclaimer", "segments": []},
+            ],
+        }
+        entries = [
+            {"start": 0.0, "end": 1.0, "text": "普通字幕"},
+            {"start": 1.0, "end": 2.0, "text": "超过15分钟"},
+        ]
+        plan = {"ai_review": {"status": "approved"}, "cues": [
+            {"presentation": "base", "keyword_spans": [], "highlight": {"enabled": False}, "card": {"enabled": False}},
+            {"presentation": "keyword", "keyword_spans": [{"start": 2, "end": 6}], "highlight": {"enabled": False}, "card": {"enabled": False}},
+        ], "disclaimer": {"enabled": False}}
+        report = draft_captions.validate(document, entries, "Subtitles", caption_plan=plan, require_semantic_design=True)
+        self.assertEqual(report["status"], "passed", report["errors"])
+        self.assertEqual(report["semantic_design"]["keyword_cues"], 1)
+
+    def test_semantic_caption_validation_rejects_unstyled_characters(self):
+        document = {
+            "materials": {"texts": [{"id": "caption", "content": json.dumps({"text": "超过15分钟", "styles": [
+                {"fill": {"content": {"solid": {"color": [1.0, 0.12, 0.1]}}}, "range": [2, 6]},
+            ]}, ensure_ascii=False)}]},
+            "tracks": [
+                {"type": "text", "name": "Subtitles", "segments": [{"material_id": "caption", "target_timerange": {"start": 0, "duration": 1_000_000}}]},
+                {"type": "text", "name": "CaptionHighlights", "segments": []},
+                {"type": "text", "name": "CaptionCards", "segments": []},
+                {"type": "text", "name": "Disclaimer", "segments": []},
+            ],
+        }
+        entries = [{"start": 0.0, "end": 1.0, "text": "超过15分钟"}]
+        plan = {"ai_review": {"status": "approved"}, "cues": [{
+            "presentation": "keyword", "keyword_spans": [{"start": 2, "end": 6}],
+            "highlight": {"enabled": False}, "card": {"enabled": False},
+        }], "disclaimer": {"enabled": False}}
+        report = draft_captions.validate(document, entries, "Subtitles", caption_plan=plan, require_semantic_design=True)
+        self.assertEqual(report["status"], "failed")
+        self.assertTrue(any("every character" in error for error in report["errors"]))
+
 
 if __name__ == "__main__":
     unittest.main()

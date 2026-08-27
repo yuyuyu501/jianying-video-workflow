@@ -20,6 +20,9 @@ REQUIRED_TRACKS = {
     "CharacterEffects": "effect",
     "Stickers": "sticker",
     "Subtitles": "text",
+    "CaptionHighlights": "text",
+    "CaptionCards": "text",
+    "Disclaimer": "text",
 }
 REQUIRED_TRACK_ORDER = list(REQUIRED_TRACKS)
 
