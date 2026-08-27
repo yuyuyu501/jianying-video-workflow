@@ -323,17 +323,21 @@ verified empty skeleton in one editable session, and writes silent visual,
 narration, B-roll, optional circular speaker PiP, caption presentation, and
 approved effects. PiP is a separate optional stage after the empty skeleton and
 before subtitle layout/assembly. The asset director requests it only when a
-full-frame B-roll segment needs the visible speaker identity; no B-roll, a
-single talking-head source, or short assets that do not benefit from a visible
-speaker all leave `SpeakerPiP` empty. Use `--speaker-pip-mode off` to skip it,
-`auto` to disable unsafe/unavailable segments, or `require` to fail when a
-requested segment has no approved visual decision. The stage writes candidate
-composites to `pip-face-review`; an AI or reviewer may return the selected
-safe position in `--speaker-pip-visual-decisions`. Omit `--broll-plan` when
-there is no B-roll. A B-roll plan can request PiP per segment:
+full-frame B-roll segment needs the visible speaker identity. When B-roll exists,
+every B-roll segment automatically enters face detection, complete-head
+framing, candidate placement, and protected-information collision review. A
+safe candidate is accepted in `auto` mode; unsafe or unavailable segments are
+left without PiP. Use `--speaker-pip-mode off` to skip the whole stage, or
+`require` to require an explicit visual decision for every evaluated segment.
+The stage writes candidate composites to `pip-face-review`; an AI or reviewer
+may return the selected safe position in `--speaker-pip-visual-decisions`.
+Within a B-roll plan, `speaker_pip.mode: "off"` is the explicit per-segment
+opt-out. Missing `speaker_pip` and legacy `speaker_pip.enabled: false` both
+mean automatic evaluation. Omit `--broll-plan` when there is no B-roll. A
+B-roll plan may still provide a preferred PiP position:
 
 ```json
-{"segments": [{"video": "C:\\media\\demonstration.mp4", "start": 10.84, "duration": 3.0, "source_start": 0.0, "speaker_pip": {"enabled": true, "position": "upper_right"}}]}
+{"segments": [{"video": "C:\\media\\demonstration.mp4", "start": 10.84, "duration": 3.0, "source_start": 0.0, "speaker_pip": {"position": "upper_right"}}]}
 ```
 
 ```powershell

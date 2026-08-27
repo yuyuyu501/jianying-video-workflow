@@ -19,6 +19,15 @@ pip = load_module()
 
 
 class PipPlanningTests(unittest.TestCase):
+    def test_missing_pip_policy_defaults_to_auto(self):
+        self.assertEqual(pip.pip_request_mode({}), "auto")
+
+    def test_legacy_enabled_false_still_defaults_to_auto(self):
+        self.assertEqual(pip.pip_request_mode({"speaker_pip": {"enabled": False}}), "auto")
+
+    def test_explicit_off_is_the_only_per_segment_opt_out(self):
+        self.assertEqual(pip.pip_request_mode({"speaker_pip": {"mode": "off"}}), "off")
+
     def test_head_envelope_adds_top_and_chin_margin(self):
         face = {"x": 400, "y": 580, "width": 300, "height": 300}
         head = pip.head_envelope(face, 1080, 1920)
@@ -39,6 +48,33 @@ class PipPlanningTests(unittest.TestCase):
         review = {"pip_reviews": [{"segment_index": 1, "status": "rejected"}]}
         resolved = pip.resolve_broll_plan(plan, review)
         self.assertFalse(resolved["segments"][0]["speaker_pip"]["enabled"])
+
+    def test_resolved_plan_evaluates_segment_without_pip_field(self):
+        plan = {"segments": [{"video": "broll.mp4"}]}
+        review = {"pip_reviews": [{
+            "segment_index": 1, "status": "approved", "scale": 0.6,
+            "selected_candidate": {"position": "middle_right", "safe": True},
+        }]}
+        resolved = pip.resolve_broll_plan(plan, review)
+        self.assertTrue(resolved["segments"][0]["speaker_pip"]["enabled"])
+        self.assertEqual(resolved["segments"][0]["speaker_pip"]["mode"], "auto")
+
+    def test_resolved_plan_evaluates_legacy_enabled_false(self):
+        plan = {"segments": [{"speaker_pip": {"enabled": False}}]}
+        review = {"pip_reviews": [{
+            "segment_index": 1, "status": "approved",
+            "selected_candidate": {"position": "middle_left", "safe": True},
+        }]}
+        resolved = pip.resolve_broll_plan(plan, review)
+        self.assertTrue(resolved["segments"][0]["speaker_pip"]["enabled"])
+
+    def test_resolved_plan_preserves_explicit_off(self):
+        plan = {"segments": [{"speaker_pip": {"mode": "off", "enabled": True}}]}
+        review = {"pip_reviews": [{"segment_index": 1, "status": "approved"}]}
+        resolved = pip.resolve_broll_plan(plan, review)
+        result = resolved["segments"][0]["speaker_pip"]
+        self.assertFalse(result["enabled"])
+        self.assertEqual(result["mode"], "off")
 
     def test_resolved_plan_uses_only_safe_approved_candidate(self):
         plan = {"segments": [{"speaker_pip": {"enabled": True}}]}
@@ -93,14 +129,35 @@ class PipPlanningTests(unittest.TestCase):
         pip.apply_visual_decisions(review, {"segments": []}, {}, "require")
         self.assertEqual(review["pip_reviews"][0]["status"], "rejected")
 
-    def test_missing_auto_visual_review_also_rejects_pip(self):
+    def test_missing_required_visual_review_rejects_pip(self):
         review = {"pip_reviews": [{
             "segment_index": 1,
             "status": "approved",
             "selected_candidate": {"position": "middle_left", "safe": True},
             "candidates": [{"position": "middle_left", "safe": True}],
         }]}
-        pip.apply_visual_decisions(review, {"segments": []}, {}, "auto")
+        pip.apply_visual_decisions(review, {"segments": []}, {}, "require")
+        finding = review["pip_reviews"][0]
+        self.assertEqual(finding["status"], "rejected")
+        self.assertEqual(finding["visual_review_status"], "missing")
+
+    def test_auto_mode_accepts_machine_safe_candidate_without_decision_file(self):
+        review = {"pip_reviews": [{
+            "segment_index": 1, "status": "approved",
+            "selected_candidate": {"position": "middle_left", "safe": True},
+        }]}
+        pip.apply_visual_decisions(review, {"segments": [{}]}, {}, "auto")
+        finding = review["pip_reviews"][0]
+        self.assertEqual(finding["status"], "approved")
+        self.assertEqual(finding["visual_review_status"], "automatic")
+
+    def test_segment_require_policy_blocks_auto_fallback(self):
+        review = {"pip_reviews": [{
+            "segment_index": 1, "status": "approved",
+            "selected_candidate": {"position": "middle_left", "safe": True},
+        }]}
+        plan = {"segments": [{"speaker_pip": {"mode": "require"}}]}
+        pip.apply_visual_decisions(review, plan, {}, "auto")
         finding = review["pip_reviews"][0]
         self.assertEqual(finding["status"], "rejected")
         self.assertEqual(finding["visual_review_status"], "missing")

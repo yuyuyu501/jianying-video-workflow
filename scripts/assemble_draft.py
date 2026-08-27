@@ -17,6 +17,7 @@ from validate_draft_effects import validate as validate_effects
 from validate_draft_narration import validate as validate_narration
 from validate_draft_pip import validate as validate_pip
 from validate_draft_skeleton import validate as validate_skeleton
+from analyze_pip_faces import pip_request_mode
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -142,8 +143,9 @@ def load_broll_plan(path: Path, pip_visual_review: Path | None = None) -> list[d
             speaker_pip = {"enabled": True}
         if not isinstance(speaker_pip, dict):
             raise ValueError(f"B-roll segment {index} speaker_pip must be an object or true")
-        enabled = bool(speaker_pip.get("enabled", False))
+        request_mode = pip_request_mode(item)
         review = visual_reviews.get(index)
+        enabled = bool(speaker_pip.get("enabled", False)) or (review is not None and request_mode != "off")
         if enabled and review is None:
             raise ValueError(f"B-roll segment {index} requires a passing face-driven PiP visual review")
         if review is not None and (abs(float(review.get("final_start", -1)) - start) > 0.02 or abs(float(review.get("final_duration", -1)) - duration) > 0.02):
@@ -165,6 +167,7 @@ def load_broll_plan(path: Path, pip_visual_review: Path | None = None) -> list[d
             "source_start": source_start,
             "speaker_pip": {
                 "enabled": enabled,
+                "mode": request_mode,
                 "position": str(candidate.get("position") if review else speaker_pip.get("position", "upper_right")),
                 "scale": scale,
                 "face_center_x": face_center_x,

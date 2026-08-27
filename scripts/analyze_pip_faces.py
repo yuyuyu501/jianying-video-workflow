@@ -27,6 +27,23 @@ def load_json(path: Path) -> dict:
     return payload
 
 
+def pip_request_mode(segment: dict) -> str:
+    """Return the per-B-roll PiP policy; omitted/legacy false means automatic."""
+    pip = segment.get("speaker_pip") if isinstance(segment, dict) else None
+    if pip is True or pip is None:
+        return "auto"
+    if not isinstance(pip, dict):
+        return "auto"
+    mode = str(pip.get("mode", "")).strip().lower()
+    if mode in {"off", "disabled"}:
+        return "off"
+    if mode == "require":
+        return "require"
+    # `enabled: false` was historically used for "not requested". Keep old
+    # plans compatible while making explicit mode=off the real opt-out.
+    return "auto"
+
+
 def clamp(value: float, lower: float, upper: float) -> float:
     return max(lower, min(upper, value))
 
@@ -230,20 +247,34 @@ def write_candidate_previews(
 
 
 def apply_visual_decisions(review: dict, plan: dict, decisions: dict[int, dict], mode: str) -> None:
-    """Let visual review approve, move, or reject only machine-safe candidates.
+    """Apply visual decisions, with machine-safe fallback only in auto mode.
 
     Face detection and caption/title collision checks are only a candidate
     generator. They cannot determine whether a B-roll's medical diagram,
-    product, or action is the information that must remain visible. Therefore
-    no requested PiP may reach draft assembly until a visual decision explicitly
-    approves one candidate.
+    product, or action is the information that must remain visible. Explicit
+    visual decisions therefore override the fallback whenever supplied, and
+    require mode refuses candidates without such a decision.
     """
+    segments = plan.get("segments", [])
     for finding in review.get("pip_reviews", []):
-        decision = decisions.get(int(finding["segment_index"]))
+        index = int(finding["segment_index"])
+        decision = decisions.get(index)
+        segment_mode = pip_request_mode(segments[index - 1]) if 0 < index <= len(segments) else "auto"
+        effective_mode = "require" if mode == "require" or segment_mode == "require" else mode
         if decision is None:
+            if effective_mode == "auto":
+                if finding.get("selected_candidate", {}).get("safe"):
+                    finding["visual_review_status"] = "automatic"
+                    finding["visual_review_reason"] = "The machine-safe candidate was accepted in auto mode."
+                    continue
+                finding["visual_review_status"] = "automatic"
+                finding["visual_review_reason"] = "No machine-safe candidate was available."
+                finding["status"] = "rejected"
+                finding["reason"] = "No candidate avoids protected zones."
+                continue
             finding["visual_review_status"] = "missing"
             finding["status"] = "rejected"
-            finding["reason"] = "No visual approval was supplied for this requested PiP segment."
+            finding["reason"] = "No visual approval was supplied for this required PiP segment."
             continue
         finding["visual_review_status"] = decision["status"]
         finding["visual_review_reason"] = str(decision.get("reason", ""))
@@ -263,20 +294,27 @@ def apply_visual_decisions(review: dict, plan: dict, decisions: dict[int, dict],
 
 
 def resolve_broll_plan(plan: dict, review: dict) -> dict:
-    """Disable rejected PiP requests before draft assembly; PiP is optional."""
+    """Resolve every B-roll's automatic PiP review before draft assembly."""
     resolved = json.loads(json.dumps(plan))
     by_index = {int(item["segment_index"]): item for item in review.get("pip_reviews", [])}
     for index, segment in enumerate(resolved.get("segments", []), start=1):
         pip = segment.get("speaker_pip")
         if pip is True:
-            pip = {"enabled": True}
+            pip = {}
+            segment["speaker_pip"] = pip
+        if pip is None:
+            pip = {}
             segment["speaker_pip"] = pip
         if not isinstance(pip, dict):
+            raise ValueError(f"B-roll segment {index} speaker_pip must be an object or true")
+        if pip_request_mode(segment) == "off":
+            pip["enabled"] = False
+            pip["mode"] = "off"
             continue
         finding = by_index.get(index)
         approved = finding if finding and finding.get("status") == "approved" else None
         pip["enabled"] = bool(approved)
-        pip.pop("mode", None)
+        pip["mode"] = "auto"
         if approved:
             candidate = approved["selected_candidate"]
             pip["position"] = candidate["position"]
@@ -297,7 +335,7 @@ def detect_review(
     visual_decisions: Path | None = None,
 ) -> dict:
     if mode == "off":
-        return {"version": 3, "mode": mode, "pip_reviews": [], "skipped": "disabled_by_mode", "errors": [], "status": "skipped"}
+        return {"version": 4, "mode": mode, "pip_reviews": [], "skipped": "disabled_by_mode", "errors": [], "status": "skipped"}
     try:
         import cv2
     except ImportError as error:
@@ -315,11 +353,12 @@ def detect_review(
     width, height = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH)), int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
     reviews, errors, requested = [], [], 0
     for index, segment in enumerate(segments, start=1):
-        pip = segment.get("speaker_pip", {}) if isinstance(segment, dict) else {}
-        requested_here = isinstance(pip, dict) and pip.get("mode", pip.get("enabled", False)) not in {False, "off", "disabled"}
-        if not requested_here:
+        if pip_request_mode(segment) == "off":
             continue
         requested += 1
+        pip = segment.get("speaker_pip", {}) if isinstance(segment, dict) else {}
+        if not isinstance(pip, dict):
+            pip = {}
         start, duration = float(segment.get("start", -1)), float(segment.get("duration", 0))
         detections = []
         for timestamp in sampled_times(start, duration):
@@ -335,7 +374,14 @@ def detect_review(
                 detections.append({"timestamp": round(timestamp, 3), "bbox": {"x": x, "y": y, "width": w, "height": h}})
         detections = consistent_detections(detections)
         if len(detections) < 2:
-            errors.append(f"PiP segment {index} has only {len(detections)} reliable face detections")
+            reason = f"PiP segment {index} has only {len(detections)} reliable face detections"
+            errors.append(reason)
+            reviews.append({
+                "segment_index": index, "final_start": round(start, 3), "final_duration": round(duration, 3),
+                "source_visual": str(video.resolve()), "frame_size": {"width": width, "height": height},
+                "detections": detections, "candidates": [], "selected_candidate": None,
+                "status": "rejected", "reason": reason,
+            })
             continue
         boxes = [item["bbox"] for item in detections]
         face = {key: median(item[key] for item in boxes) for key in ("x", "y", "width", "height")}
@@ -366,10 +412,15 @@ def detect_review(
     apply_visual_decisions({"pip_reviews": reviews}, plan, decisions, mode)
     capture.release()
     if not requested:
-        return {"version": 3, "mode": mode, "pip_reviews": [], "skipped": "no_segment_requested_pip", "errors": [], "status": "skipped"}
-    if mode == "require" and (errors or any(item["status"] != "approved" for item in reviews)):
-        return {"version": 3, "mode": mode, "pip_reviews": reviews, "preview_paths": preview_paths, "errors": errors + ["one or more PiP segments have no safe visual-reviewed candidate"], "status": "failed"}
-    return {"version": 3, "mode": mode, "pip_reviews": reviews, "preview_paths": preview_paths, "errors": errors, "status": "succeeded"}
+        return {"version": 4, "mode": mode, "pip_reviews": [], "skipped": "no_broll_available_for_pip", "errors": [], "status": "skipped"}
+    required_failures = [
+        item for item in reviews
+        if item.get("status") != "approved"
+        and pip_request_mode(segments[int(item["segment_index"]) - 1]) == "require"
+    ]
+    if (mode == "require" and (errors or any(item["status"] != "approved" for item in reviews))) or required_failures:
+        return {"version": 4, "mode": mode, "pip_reviews": reviews, "preview_paths": preview_paths, "errors": errors + ["one or more required PiP segments have no safe visual-reviewed candidate"], "status": "failed"}
+    return {"version": 4, "mode": mode, "pip_reviews": reviews, "preview_paths": preview_paths, "errors": errors, "status": "succeeded"}
 
 
 def main() -> int:
