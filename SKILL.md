@@ -28,7 +28,9 @@ video-understand (external)
 -> AI review of role, keyword spans, hierarchy, safe position, and collisions for every caption cue
 -> one-treatment-per-beat visual plan: editorial composition before effect search
 -> jianying-asset-director (bundled)
--> scene-effect/SFX shortlist only where the approved treatment requests it
+-> independent SFX timing review across semantic emphasis, transitions, and action hits
+-> sound-effect shortlist only for approved SFX opportunities
+-> scene-effect shortlist only where the approved visual treatment requests it
 -> face-intent-gated character-effect shortlist and AI selection
 -> portrait filter/beautification shortlist, frame-grounded selection, and Filters-track QC
 -> content-aware sticker shortlist, placement/collision review, and Stickers-track QC
@@ -204,6 +206,17 @@ effect onset, duration, evidence timestamp, concrete observation, shortlist ID,
 and collision risk. Code rejects timing outside the beat or detached from the
 evidence, excessive reuse, style-budget violations, and scene/person overlap
 without an explicit reviewed layering reason.
+
+Sound effects are a separate reviewed stage, not a side effect of scene-effect
+selection. Generate `sfx_timing_plan.template.json` from the final-timeline
+beats and optional B-roll boundaries. Review every beat for semantic emphasis,
+chapter or visual transitions, action hits, warnings, confirmations, timers,
+notifications, and outro cues. Only approved opportunities receive a bounded
+JianYing sound-library shortlist. Medical/educational edits default to no more
+than 1.5 selected SFX per minute, 4 seconds between cues, at most two uses of
+one cue type, and volume no higher than 0.14. General short videos allow up to
+2.5 per minute and volume no higher than 0.18. These are ceilings rather than
+targets. Empty SFX plans require a specific skip reason.
 
 The runner exposes this as `--approved-visual-treatment-plan`. A clean run with
 `--beats` first writes `visual_treatment_plan.template.json` and stops with
@@ -391,6 +404,7 @@ python scripts/validate_draft_effects.py --draft-name "DraftName" --expected-cou
 Validate the independent finish tracks as well:
 
 ```powershell
+python scripts/validate_draft_sfx.py --draft-name "DraftName" --plan "work\selected_plan.json"
 python scripts/validate_draft_filters.py --draft-name "DraftName" --plan "work\filter_plan.json"
 python scripts/validate_draft_stickers.py --draft-name "DraftName" --plan "work\sticker_plan.json"
 ```

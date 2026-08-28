@@ -1,6 +1,6 @@
 {
   "name": "jianying-video-workflow",
-  "version": 19,
+  "version": 20,
   "workflow_skill": "jianying-video-workflow",
   "internal_skills": [
     {

@@ -146,6 +146,29 @@ class AssetDirectorTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "must be 'SFX'"):
             asset_director.selected_item({**beat, "sound_track": "SFX_Accent"}, candidate, "sound", taxonomy)
 
+    def test_sfx_timing_gate_exposes_candidates_only_for_approved_opportunities(self):
+        with tempfile.TemporaryDirectory() as directory:
+            taxonomy = self.write_json(directory, "taxonomy.json", TAXONOMY)
+            sound = asset("sound", "提示音", ["warning"])
+            sound["asset_type"] = "sound_effect"
+            catalog = self.write_json(directory, "catalog.json", {"assets": [sound]})
+            beats = self.write_json(directory, "beats.json", {"beats": [
+                {"beat_id": "one", "start": 1, "end": 3, "purpose": "warning"},
+                {"beat_id": "two", "start": 5, "end": 7, "purpose": "warning"},
+            ]})
+            sfx = self.write_json(directory, "sfx.json", {
+                "style": "medical_education", "skip_reason": "",
+                "ai_review": {"required": True, "status": "approved"},
+                "opportunities": [
+                    {"beat_id": "one", "use_sfx": True, "status": "approved", "cue_type": "warning", "trigger_time": 1.5, "suggested_duration": 0.5, "volume": 0.12, "evidence": "The warning phrase lands here.", "reason": "A brief cue reinforces this warning."},
+                    {"beat_id": "two", "use_sfx": False, "status": "skipped", "reason": "The beat is already clear without an added sound."},
+                ],
+            })
+            output = asset_director.plan(beats, catalog, taxonomy, "medical_education", sfx_opportunities_path=sfx)
+            self.assertEqual([item["asset_id"] for item in output["beats"][0]["sound_candidates"]], ["sound"])
+            self.assertEqual(output["beats"][1]["sound_candidates"], [])
+            self.assertTrue(output["beats"][0]["sfx_opportunity"]["use_sfx"])
+
     def test_shortlist_covers_purpose_tag_beyond_top_scores(self):
         with tempfile.TemporaryDirectory() as directory:
             taxonomy = dict(TAXONOMY)
@@ -270,6 +293,59 @@ class AssetDirectorTests(unittest.TestCase):
             "character_effects": [{"start": 1.5, "duration": 1, "beat_id": "one"}],
         }
         self.assertIn("overlap", asset_director.effect_overlap_problems(data)[0])
+
+    def test_approved_frame_grounded_character_treatment_confirms_visible_face(self):
+        with tempfile.TemporaryDirectory() as directory:
+            taxonomy = self.write_json(directory, "taxonomy.json", TAXONOMY)
+            catalog = self.write_json(directory, "catalog.json", {"assets": [
+                character_asset("face", "人物高光", ["person", "highlight"]),
+            ]})
+            beats = self.write_json(directory, "beats.json", {"beats": [{
+                "beat_id": "one", "start": 10, "end": 12, "purpose": "warning",
+                "representative_frame": "frame.jpg",
+            }]})
+            treatments = self.write_json(directory, "treatments.json", {"treatments": [{
+                "beat_id": "one", "primary_treatment": "character_effect", "secondary_treatment": None,
+                "review_status": "approved", "visual_evidence_time": 10.8,
+                "representative_frame": "frame.jpg",
+                "visual_evidence": "The reviewed frame shows the speaker's complete unobstructed face.",
+                "layering_reason": "", "character_intent": "emotion_emphasis",
+            }]})
+            output = asset_director.plan(beats, catalog, taxonomy, "medical_education", treatments)
+            self.assertTrue(output["beats"][0]["character_effect_eligibility"]["eligible"])
+            self.assertEqual([item["asset_id"] for item in output["beats"][0]["character_candidates"]], ["face"])
+
+    def test_full_height_broll_overrides_approved_character_treatment(self):
+        beat = {
+            "beat_id": "one", "pip_zone": "center_full_height",
+            "visual_treatment": {
+                "primary_treatment": "character_effect", "secondary_treatment": None,
+                "review_status": "approved", "character_intent": "emotion_emphasis",
+                "representative_frame": "frame.jpg",
+                "visual_evidence": "The reviewed frame shows the complete speaker face.",
+            },
+        }
+        eligible, reason = asset_director.character_effect_eligibility(beat)
+        self.assertFalse(eligible)
+        self.assertIn("B-roll", reason)
+
+    def test_medical_outro_shortlist_excludes_cartoon_character_effects(self):
+        with tempfile.TemporaryDirectory() as directory:
+            taxonomy_data = json.loads(json.dumps(TAXONOMY))
+            taxonomy_data["style_profiles"]["medical_education"]["forbidden"] = ["cartoon"]
+            taxonomy_data["beat_purposes"]["outro"] = {
+                "preferred": ["person", "scan"], "forbidden": ["cartoon"], "max_duration": 1.0,
+            }
+            taxonomy = self.write_json(directory, "taxonomy.json", taxonomy_data)
+            catalog = self.write_json(directory, "catalog.json", {"assets": [
+                character_asset("safe", "轮廓扫描", ["person", "scan"]),
+                character_asset("cartoon", "可爱猪", ["person", "cartoon"]),
+            ]})
+            beats = self.write_json(directory, "beats.json", {"beats": [{
+                "beat_id": "outro", "start": 10, "end": 12, "purpose": "outro", "person_visible": True,
+            }]})
+            output = asset_director.plan(beats, catalog, taxonomy, "medical_education")
+            self.assertEqual([item["asset_id"] for item in output["beats"][0]["character_candidates"]], ["safe"])
 
     def test_effect_visual_review_is_required_after_materialization(self):
         data = {"visual_effects": [{"beat_id": "one", "asset_id": "scene"}], "character_effects": []}

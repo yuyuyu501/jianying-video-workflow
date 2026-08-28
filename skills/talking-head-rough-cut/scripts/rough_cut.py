@@ -26,6 +26,7 @@ DEFAULT_TARGET_CPM = 285.0
 DEFAULT_MIN_CPM = 260.0
 DEFAULT_MAX_SPEED = 1.35
 MIN_SPEED_CHANGE = 1.05
+MAX_SILENCE_JOIN_GAP = 0.02
 
 
 def emit(status: str, command: str, **payload: Any) -> None:
@@ -64,6 +65,22 @@ def probe(video: Path, *, require_audio: bool = True) -> dict[str, Any]:
     return {"duration": duration, "streams": data.get("streams", [])}
 
 
+def merge_silence_ranges(
+    ranges: Iterable[tuple[float, float]],
+    max_gap: float = MAX_SILENCE_JOIN_GAP,
+) -> list[tuple[float, float]]:
+    """Join detector fragments that represent one continuous breathing gap."""
+    merged: list[tuple[float, float]] = []
+    for start, end in sorted(ranges):
+        if end <= start:
+            continue
+        if merged and start <= merged[-1][1] + max_gap:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return merged
+
+
 def find_silences(video: Path, noise_db: float, minimum_seconds: float) -> list[tuple[float, float]]:
     result = run([
         "ffmpeg", "-hide_banner", "-nostdin", "-i", str(video), "-vn",
@@ -72,7 +89,9 @@ def find_silences(video: Path, noise_db: float, minimum_seconds: float) -> list[
     ], capture=True)
     starts = [float(value) for value in re.findall(r"silence_start:\s*([0-9.]+)", result.stderr)]
     ends = [float(value) for value in re.findall(r"silence_end:\s*([0-9.]+)", result.stderr)]
-    return [(start, end) for start, end in zip(starts, ends) if end > start]
+    return merge_silence_ranges(
+        (start, end) for start, end in zip(starts, ends) if end > start
+    )
 
 
 def pause_exclusion(silence_start: float, silence_end: float, target_pause: float) -> tuple[float, float] | None:

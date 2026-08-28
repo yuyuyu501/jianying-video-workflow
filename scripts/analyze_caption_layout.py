@@ -5,11 +5,41 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 from pathlib import Path
 
 from analyze_pip_faces import PIP_ANCHORS, add_circle_preview, canvas_frame, choose_face, load_json
 from caption_design_director import semantic_role
 from validate_draft_captions import read_srt
+
+
+def write_jpeg(path: Path, frame) -> None:
+    """Write through Python so Windows Unicode paths do not reach cv2.imwrite."""
+    import cv2
+
+    ok, encoded = cv2.imencode(".jpg", frame)
+    if not ok:
+        raise RuntimeError(f"cannot encode representative caption frame: {path}")
+    path.write_bytes(encoded.tobytes())
+
+
+def ffmpeg_frame(video: Path, timestamp: float):
+    """Decode one frame when OpenCV cannot seek a source reliably."""
+    import cv2
+    import numpy as np
+
+    result = subprocess.run(
+        [
+            "ffmpeg", "-hide_banner", "-loglevel", "error", "-ss", f"{timestamp:.3f}",
+            "-i", str(video), "-frames:v", "1", "-f", "image2pipe", "-vcodec", "mjpeg", "pipe:1",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    frame = cv2.imdecode(np.frombuffer(result.stdout, dtype=np.uint8), cv2.IMREAD_COLOR)
+    if frame is None:
+        raise RuntimeError(f"cannot decode B-roll representative frame: {video} at {timestamp:.3f}s")
+    return frame
 
 
 def overlaps(entry: dict, segment: dict) -> bool:
@@ -69,12 +99,17 @@ def review(video: Path, captions: Path, broll_plan: Path, frame_dir: Path) -> di
         if broll_segment is not None:
             broll_video = Path(str(broll_segment.get("video", "")))
             broll_capture = cv2.VideoCapture(str(broll_video))
-            source_time = float(broll_segment.get("source_start", 0)) + max(0.0, timestamp - float(broll_segment["start"]))
+            broll_start = float(broll_segment["start"])
+            broll_end = broll_start + float(broll_segment["duration"])
+            overlap_start = max(float(entry["start"]), broll_start)
+            overlap_end = min(float(entry["end"]), broll_end)
+            overlap_time = (overlap_start + overlap_end) / 2
+            source_time = float(broll_segment.get("source_start", 0)) + max(0.0, overlap_time - broll_start)
             broll_capture.set(cv2.CAP_PROP_POS_MSEC, source_time * 1000)
             broll_ok, broll_frame = broll_capture.read()
             broll_capture.release()
             if not broll_ok:
-                raise RuntimeError(f"cannot read B-roll representative frame: {broll_video} at {source_time:.3f}s")
+                broll_frame = ffmpeg_frame(broll_video, source_time)
             frame = canvas_frame(broll_frame, width, height)
             pip = broll_segment.get("speaker_pip", {})
             if isinstance(pip, dict) and pip.get("enabled"):
@@ -91,8 +126,7 @@ def review(video: Path, captions: Path, broll_plan: Path, frame_dir: Path) -> di
             face = choose_face([tuple(map(int, box)) for box in boxes], width, height)
         if ok:
             frame_path = frame_dir / f"cue_{index:04d}.jpg"
-            if not cv2.imwrite(str(frame_path), frame):
-                raise RuntimeError(f"cannot write representative caption frame: {frame_path}")
+            write_jpeg(frame_path, frame)
         else:
             frame_path = None
         if context == "talking_head":

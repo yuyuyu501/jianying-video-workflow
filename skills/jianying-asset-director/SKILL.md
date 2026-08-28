@@ -56,26 +56,35 @@ draft skeleton before asset selection so every later write has a fixed target.
 6. **Catalog**: run `scripts/asset_director.py catalog` against the local
    JianYing data directory. Use real IDs from `video_scene_effects.csv` and
    `cloud_sound_effects.csv`; never invent IDs from names.
-7. **Shortlist**: validate the approved visual-treatment plan, then run
-   `scripts/asset_director.py plan --visual-treatments ...`. It ranks the full
+7. **SFX timing review**: run `scripts/sfx_timing_director.py template` against
+   the final-timeline beats and optional B-roll plan. Review semantic emphasis,
+   chapter changes, visual transitions, action hits, warnings, confirmations,
+   timers, notifications, and the outro. Approve only precise triggers that
+   improve comprehension; mark every other beat skipped with a reason. The
+   validator enforces style-specific density, minimum spacing, cue-type
+   repetition, duration, opening restraint, and narration-safe volume. An empty
+   plan is valid only with a specific `skip_reason`.
+8. **Shortlist**: validate the approved visual-treatment and SFX timing plans,
+   then run `scripts/asset_director.py plan --visual-treatments ...
+   --sfx-opportunities ...`. It ranks the full
    local library deterministically, but emits scene-effect candidates only for
    `scene_effect` beats and character-effect candidates only for
-   `character_effect` beats. Other treatments receive empty effect shortlists.
-   It never auto-selects the first ranked effect.
-8. **AI selection**: give the AI the beat's representative frame(s),
+   `character_effect` beats. Sound candidates are emitted only for approved SFX
+   opportunities. It never auto-selects the first ranked asset.
+9. **AI selection**: give the AI the beat's representative frame(s),
    `spoken_text`, purpose, domain style, and its `visual_candidates` /
    `sound_candidates`. It must return a candidate ID or `null`, plus a frame
    timestamp, concrete visual observation, effect onset, and duration. Apply
    this response using the `select` command; it rejects invented IDs, missing
    evidence, timing outside the beat, timing detached from evidence, duplicate
    decisions, excessive reuse, and effects inside the cooldown window.
-9. **Character-effect selection**: use `character_candidates` as a separate
+10. **Character-effect selection**: use `character_candidates` as a separate
    decision. Face visibility alone is insufficient. The approved treatment
    must contain a face-specific `character_intent`, and no full-height B-roll
    may hide the speaker. Code enforces `face_target`, a sparse style budget,
    and a stricter cooldown. Scene and character effects may not overlap unless
    the reviewed treatment contains a concrete `layering_reason`.
-10. **Preview gate**: after materialization, use a real preview or export
+11. **Preview gate**: after materialization, use a real preview or export
    rendered by JianYing. Extract pre/during/post clips for every selected effect,
    including captions, PiP, and the candidate audio. Inspect the actual visual
    result and waveform/loudness. Do not use names alone to judge an asset.
@@ -83,17 +92,17 @@ draft skeleton before asset selection so every later write has a fixed target.
    or supplied by the user. Never export a JianYing draft automatically. For a
    supplied preview, extract review clips with:
    `python scripts/asset_director.py preview --video rendered_preview.mp4 --plan plan.json --output-dir preview/`.
-11. **User gate**: output the timestamped plan, selected assets, rejected
+12. **User gate**: output the timestamped plan, selected assets, rejected
    candidates, and unresolved decisions. If the user has asked to proceed,
    continue; otherwise wait for confirmation.
-12. **Optional SpeakerPiP review**: after the skeleton, request PiP only when
+13. **Optional SpeakerPiP review**: after the skeleton, request PiP only when
     full-frame B-roll would otherwise lose the speaker's identity. Run
     `analyze_pip_faces.py` to detect a complete head, reject protected-zone
     collisions, and render every candidate over a representative B-roll frame.
     A visual model or reviewer may approve one `safe` candidate or reject the
     segment. No B-roll, a single talking-head visual, or short assets without
     an identity need leave this track empty. This stage never writes the draft.
-13. **Build**: call `jianying-editor` in draft-library-only mode to add the
+14. **Build**: call `jianying-editor` in draft-library-only mode to add the
    approved main visual, narration, subtitles, styles, B-roll, effects, and
    SFX to the validated skeleton. When B-roll still needs an identifiable
    speaker, hand the beat to the separate optional SpeakerPiP stage. Declare
@@ -105,7 +114,7 @@ draft skeleton before asset selection so every later write has a fixed target.
    and each audio role. Sound effects use the skeleton's `SFX` track; do not
    silently create a new named audio track. Keep source asset IDs, local cache paths, and the
    absolute draft path in the build report.
-14. **Validate**: after each materialization stage and at the end, run the
+15. **Validate**: after each materialization stage and at the end, run the
    relevant track validator plus `scripts/asset_director.py validate` and the
    `jianying-editor` draft inspector. Check asset existence, effect/audio
    timing, volume, overlap with captions/PiP, opening cleanliness, and that
@@ -134,14 +143,19 @@ draft skeleton before asset selection so every later write has a fixed target.
   caption emphasis are first-class treatments.
 - Keep one primary visual treatment per beat. Scene and character effects may
   overlap only with an explicit reviewed layering reason.
-- Put visual effects on the effect track and audio on named role tracks such
-  as `SFX_Danger`, `SFX_Chapter`, `SFX_Confirm`, or `SFX_Timer`.
+- Put all selected library sound effects on the single validated `SFX` track.
+  Preserve `cue_type` as metadata; do not create per-purpose audio tracks.
 - Return `visual_effect_start` / `visual_effect_duration` or
   `character_effect_start` / `character_effect_duration`. Start at the observed
   phrase or action onset, keep the interval inside the beat, and preserve the
   timestamped frame evidence on the selected effect item.
 - Keep short SFX below narration. Start with approximately -12 to -18 dB
   relative to the spoken voice and verify by listening, not only by numbers.
+- Default to sparse accents: approximately 1.5 SFX per minute for medical or
+  educational speech and at most 2.5 per minute for a general short video.
+  Keep at least 4 seconds between medical cues, do not overlap SFX, do not use
+  one cue type more than twice in a medical edit, and do not repeat the same
+  library asset more than twice in the plan. These are upper bounds, not quotas.
 - Do not place visual effects over the subtitle zone, title zone, or PiP face
   unless the effect is specifically designed as a full-screen overlay and the
   preview shows no loss of legibility.
@@ -184,7 +198,7 @@ The plan passed to `jianying-editor` must include:
   "beats": [{"start": 10.66, "end": 15.78, "purpose": "warning", "assets": []}],
   "visual_effects": [{"asset_id": "real_resource_id", "resource_id": "real_resource_id", "source_identifier": "剪映特效名称", "name": "...", "start": 10.80, "duration": 0.6, "zone": "full_frame", "score": 0.0, "evidence_time": 10.8, "evidence": "..."}],
   "character_effects": [{"asset_id": "real_face_resource_id", "resource_id": "real_face_resource_id", "source_identifier": "人物特效名称", "name": "...", "start": 10.80, "duration": 0.6, "zone": "face_target", "beat_id": "warning-01", "character_intent": "emotion_emphasis", "evidence_time": 10.8, "evidence": "..."}],
-  "sound_effects": [{"asset_id": "...", "name": "...", "start": 10.66, "duration": 0.7, "track": "SFX_Danger", "volume": 0.12, "score": 0.0}],
+  "sound_effects": [{"asset_id": "...", "name": "...", "start": 10.66, "duration": 0.7, "track": "SFX", "cue_type": "warning", "volume": 0.12, "evidence": "The warning phrase lands here.", "timing_reason": "A brief low cue improves the warning transition.", "score": 0.0}],
   "rejected": [{"asset_id": "...", "reason": "cartoon asset forbidden for medical warning"}],
   "preview_required": true,
   "draft_library_only": true,
@@ -223,6 +237,14 @@ python scripts/asset_director.py select `
 python scripts/asset_director.py validate `
   --plan work/selected_plan.json `
   --catalog work/asset_catalog.json
+```
+
+Prepare and approve SFX opportunities before exposing library candidates:
+
+```powershell
+python scripts/sfx_timing_director.py template --beats work/beats.json --broll-plan work/broll_plan.json --output work/sfx_timing_plan.template.json
+python scripts/sfx_timing_director.py validate --plan work/sfx_timing_plan.approved.json --beats work/beats.json --output work/sfx_timing_plan.qc.json
+python scripts/asset_director.py plan --beats work/beats.json --catalog work/asset_catalog.json --visual-treatments work/visual_treatment_plan.approved.json --sfx-opportunities work/sfx_timing_plan.approved.json --output work/candidate_plan.json
 ```
 
 After JianYing has rendered the materialized draft, extract effect review clips

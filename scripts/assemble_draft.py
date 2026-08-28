@@ -18,6 +18,7 @@ from validate_draft_effects import validate as validate_effects
 from validate_draft_filters import validate as validate_filters
 from validate_draft_narration import validate as validate_narration
 from validate_draft_pip import validate as validate_pip
+from validate_draft_sfx import validate as validate_sfx
 from validate_draft_skeleton import validate as validate_skeleton
 from validate_draft_stickers import validate as validate_stickers
 from visual_finish_director import validate_filter_plan, validate_sticker_plan
@@ -332,6 +333,41 @@ def materialize_effects(project, draft, asset_plan: dict) -> tuple[int, int]:
     return len(visual_effects), len(character_effects)
 
 
+def materialize_sound_effects(project, asset_plan: dict) -> int:
+    """Freeze approved JianYing-library SFX locally and place them on SFX."""
+    items = asset_plan.get("sound_effects", [])
+    if not isinstance(items, list):
+        raise ValueError("asset plan sound_effects must be an array")
+    if items and not asset_plan.get("sfx_timing_plan"):
+        raise ValueError("selected sound effects require an approved SFX timing plan")
+    previous_end = -1.0
+    for index, item in enumerate(sorted(items, key=lambda value: float(value["start"])), start=1):
+        if item.get("track") != "SFX":
+            raise ValueError(f"sound effect {index} must target the validated SFX track")
+        asset_id = str(item.get("asset_id", "")).strip()
+        start, duration = float(item["start"]), float(item["duration"])
+        volume = float(item.get("volume", 0.12))
+        if not asset_id or start < 0 or duration <= 0:
+            raise ValueError(f"sound effect {index} requires a real asset ID and valid timing")
+        if start < previous_end - 0.000001:
+            raise ValueError(f"sound effect {index} overlaps the previous SFX segment")
+        if not 0.0 < volume <= 0.25:
+            raise ValueError(f"sound effect {index} volume is not narration-safe")
+        if len(str(item.get("evidence", "")).strip()) < 8 or len(str(item.get("timing_reason", "")).strip()) < 8:
+            raise ValueError(f"sound effect {index} lacks approved timing evidence")
+        segment = project.add_cloud_media(
+            asset_id,
+            start_time=start,
+            duration=duration,
+            track_name="SFX",
+        )
+        if segment is None:
+            raise ValueError(f"sound effect {index} could not be downloaded and frozen locally: {asset_id}")
+        segment.volume = volume
+        previous_end = start + duration
+    return len(items)
+
+
 def load_finish_plan(path: Path, kind: str) -> dict:
     payload = load_json(path.resolve())
     review = payload.get("ai_review", {})
@@ -513,6 +549,7 @@ def main() -> int:
         if not plan_report["valid"]:
             raise ValueError("sticker plan validation failed: " + "; ".join(plan_report["errors"]))
         filter_count = materialize_filters(project, draft, filter_plan)
+        sound_effect_count = materialize_sound_effects(project, asset_plan)
         visual_effect_count, character_effect_count = materialize_effects(project, draft, asset_plan)
         sticker_count = materialize_stickers(project, draft, sticker_plan)
         highlight_count = 0
@@ -552,6 +589,7 @@ def main() -> int:
                 pip_visual_review=pip_visual_review_payload,
                 require_visual_review=bool(args.pip_visual_review),
             ),
+            "sfx": validate_sfx(document, asset_plan, expected_count=sound_effect_count),
             "effects": validate_effects(document, visual_effect_count, character_effect_count),
             "filters": validate_filters(document, filter_plan, expected_count=filter_count),
             "stickers": validate_stickers(document, sticker_plan, expected_count=sticker_count),
@@ -571,6 +609,7 @@ def main() -> int:
             "pip_visual_review": str(materialized_review_path) if pip_visual_review_payload is not None else None,
             "broll_segments": len(broll),
             "speaker_pip_segments": sum(item["speaker_pip"]["enabled"] for item in broll),
+            "sfx_segments": sound_effect_count,
             "pip_crops": [
                 {"segment_index": index, **item["speaker_pip"]["crop_box"]}
                 for index, item in enumerate(broll, start=1)

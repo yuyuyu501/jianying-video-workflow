@@ -469,6 +469,16 @@ def character_effect_eligibility(beat: Dict[str, Any]) -> Tuple[bool, str]:
     person_terms = ("talkinghead", "speaker", "doctor", "face", "person", "人物", "医生", "口播", "主讲人")
     if any(term in subject for term in person_terms):
         return True, "visible-person subject analysis"
+    treatment = beat.get("visual_treatment") or {}
+    requested_treatments = {treatment.get("primary_treatment"), treatment.get("secondary_treatment")}
+    if (
+        treatment.get("review_status") == "approved"
+        and "character_effect" in requested_treatments
+        and str(treatment.get("character_intent", "")).strip()
+        and str(treatment.get("representative_frame", "")).strip()
+        and len(str(treatment.get("visual_evidence", "")).strip()) >= 8
+    ):
+        return True, "approved frame-grounded character treatment"
     return False, "no confirmed visible person or face"
 
 
@@ -492,15 +502,42 @@ def load_visual_treatments(path: Path | None, beats: List[Dict[str, Any]]) -> Tu
     }, {"source": str(path), "status": "approved", "review": report}
 
 
+def load_sfx_opportunities(
+    path: Path | None,
+    beats: List[Dict[str, Any]],
+    taxonomy_path: Path,
+) -> Tuple[Dict[str, Dict[str, Any]], Dict[str, Any] | None]:
+    if path is None:
+        return {}, None
+    script_path = Path(__file__).resolve().with_name("sfx_timing_director.py")
+    spec = importlib.util.spec_from_file_location("sfx_timing_director", script_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("SFX timing validator is unavailable")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    payload = load_json(path)
+    report = module.validate_payload(payload, beats, load_json(taxonomy_path))
+    if not report.get("valid"):
+        raise ValueError("invalid SFX timing plan: " + "; ".join(report.get("problems", [])))
+    selected = {
+        str(item["beat_id"]): item
+        for item in payload.get("opportunities", [])
+        if isinstance(item, dict) and item.get("use_sfx") is True
+    }
+    return selected, {"source": str(path), "status": "approved", "review": report}
+
+
 def plan(
     beats_path: Path,
     catalog_path: Path,
     taxonomy_path: Path,
     style_name: str,
     visual_treatments_path: Path | None = None,
+    sfx_opportunities_path: Path | None = None,
 ) -> Dict[str, Any]:
     beats = beat_list(load_json(beats_path))
     visual_treatments, treatment_record = load_visual_treatments(visual_treatments_path, beats)
+    sfx_opportunities, sfx_record = load_sfx_opportunities(sfx_opportunities_path, beats, taxonomy_path)
     cat = load_json(catalog_path)
     taxonomy = load_json(taxonomy_path)
     style = taxonomy.get("style_profiles", {}).get(style_name, taxonomy.get("style_profiles", {}).get("general_short_video", {}))
@@ -526,7 +563,15 @@ def plan(
         allow_scene = not treatment_record or "scene_effect" in approved_effect_treatments
         allow_character = not treatment_record or "character_effect" in approved_effect_treatments
         ranked_visual = rank_candidates(visual_assets, purpose, style, taxonomy, "visual") if allow_scene else []
-        ranked_sound = rank_candidates(sound_assets, purpose, style, taxonomy, "sound")
+        sfx_opportunity = sfx_opportunities.get(str(beat["beat_id"]))
+        if sfx_opportunity:
+            beat["sfx_opportunity"] = sfx_opportunity
+            beat["sound_track"] = "SFX"
+            beat["volume"] = float(sfx_opportunity["volume"])
+        cue_type = str((sfx_opportunity or {}).get("cue_type", ""))
+        sound_purpose = cue_type if cue_type in taxonomy.get("beat_purposes", {}) else purpose
+        allow_sound = not sfx_record or sfx_opportunity is not None
+        ranked_sound = rank_candidates(sound_assets, sound_purpose, style, taxonomy, "sound") if allow_sound else []
         character_allowed, character_reason = character_effect_eligibility(beat)
         if not allow_character:
             character_allowed, character_reason = False, "approved visual treatment does not request a character effect"
@@ -537,7 +582,7 @@ def plan(
             ranked_visual, purpose, style, taxonomy, int(visual_rules["candidate_limit"])
         )
         sound_shortlist = shortlist_candidates(
-            ranked_sound, purpose, style, taxonomy, int(sound_rules["candidate_limit"])
+            ranked_sound, sound_purpose, style, taxonomy, int(sound_rules["candidate_limit"])
         )
         character_shortlist = shortlist_candidates(
             ranked_character, purpose, style, taxonomy, int(character_rules["candidate_limit"])
@@ -564,7 +609,7 @@ def plan(
             "sound_selected": None,
             "character_selected": None,
             "visual_status": "awaiting_ai_review",
-            "sound_status": "awaiting_ai_review",
+            "sound_status": "awaiting_ai_review" if allow_sound else "timing_review_skipped",
             "character_status": "awaiting_ai_review" if character_allowed else "ineligible_no_effect",
         })
     return {
@@ -577,6 +622,7 @@ def plan(
         "character_effects": [],
         "decisions": decisions,
         "visual_treatment_plan": treatment_record,
+        "sfx_timing_plan": sfx_record,
         "rejected": [],
         "preview_required": True,
         "ai_review": {"required": True, "mode": "choose_from_shortlist_or_no_effect", "status": "pending"},
@@ -620,9 +666,16 @@ def selected_item(
         track = str(beat.get("sound_track", "SFX"))
         if track != "SFX":
             raise ValueError(f"sound effect track must be 'SFX' for the validated draft skeleton, got {track!r}")
-        item["duration"] = max_duration
+        opportunity = beat.get("sfx_opportunity", {})
+        start = float(selection.get("sound_effect_start", opportunity.get("trigger_time", beat["start"])))
+        duration = float(selection.get("sound_effect_duration", opportunity.get("suggested_duration", max_duration)))
+        item["start"] = start
+        item["duration"] = min(max_duration, duration)
         item["track"] = track
-        item["volume"] = beat.get("volume", 0.12)
+        item["volume"] = float(opportunity.get("volume", beat.get("volume", 0.12)))
+        item["cue_type"] = opportunity.get("cue_type")
+        item["evidence"] = str(opportunity.get("evidence", "")).strip()
+        item["timing_reason"] = str(opportunity.get("reason", "")).strip()
     for key in ("resource_id", "effect_id", "md5", "source_identifier"):
         if candidate.get(key):
             item[key] = candidate[key]
@@ -710,6 +763,18 @@ def apply_selections(plan_path: Path, selections_path: Path, taxonomy_path: Path
                 evidence_time = float(selection.get(f"{asset_type}_evidence_time", item_start))
                 if not item_start - 0.25 <= evidence_time <= item_end + 0.25:
                     raise ValueError(f"{asset_type} effect timing does not align with evidence for beat {beat_id}")
+            elif asset_type == "sound":
+                item_start = float(item["start"])
+                item_end = item_start + float(item["duration"])
+                if item_start < float(beat["start"]) or item_end > float(beat["end"]) + 0.001:
+                    raise ValueError(f"sound effect timing is outside beat {beat_id}")
+                opportunity = beat.get("sfx_opportunity", {})
+                trigger_time = float(opportunity.get("trigger_time", item_start))
+                approved_duration = float(opportunity.get("suggested_duration", item["duration"]))
+                if abs(item_start - trigger_time) > 0.25:
+                    raise ValueError(f"sound effect timing is detached from the approved trigger for beat {beat_id}")
+                if float(item["duration"]) > approved_duration + 0.001:
+                    raise ValueError(f"sound effect duration exceeds the approved opportunity for beat {beat_id}")
             output.append(item)
             decision[f"{asset_type}_selected"] = selected_id
             decision[f"{asset_type}_status"] = "selected"
@@ -734,9 +799,14 @@ def apply_selections(plan_path: Path, selections_path: Path, taxonomy_path: Path
         raise ValueError("scene-effect style budget exceeded")
     if len(character_effects) > int(style.get("max_character_effects", 10**9)):
         raise ValueError("character-effect style budget exceeded")
+    if len(sound_effects) > int(style.get("max_sound_effects", 10**9)):
+        raise ValueError("sound-effect style budget exceeded")
     overlap_problems = effect_overlap_problems(data)
     if overlap_problems:
         raise ValueError("; ".join(overlap_problems))
+    sound_problems = sound_plan_problems(data, taxonomy)
+    if sound_problems:
+        raise ValueError("; ".join(sound_problems))
     coverage_problems = creative_coverage_problems(data, taxonomy)
     if coverage_problems:
         raise ValueError("; ".join(coverage_problems))
@@ -757,6 +827,31 @@ def effect_overlap_problems(data: Dict[str, Any]) -> List[str]:
                     problems.append(
                         f"scene and character effects overlap without reviewed layering_reason: {scene.get('beat_id')}/{character.get('beat_id')}"
                     )
+    return problems
+
+
+def sound_plan_problems(data: Dict[str, Any], taxonomy: Dict[str, Any]) -> List[str]:
+    problems: List[str] = []
+    rules = selection_rules(taxonomy, "sound")
+    sounds = sorted(data.get("sound_effects", []), key=lambda item: float(item.get("start", 0)))
+    style = taxonomy.get("style_profiles", {}).get(data.get("style"), {})
+    max_total = int(style.get("max_sound_effects", rules.get("max_total", 10**9)))
+    max_volume = float(style.get("max_sfx_volume", rules.get("max_volume", 0.18)))
+    min_gap = float(style.get("min_sfx_gap_seconds", rules.get("min_gap_seconds", 3.0)))
+    if len(sounds) > max_total:
+        problems.append(f"sound-effect style budget exceeded: {len(sounds)} > {max_total}")
+    for index, item in enumerate(sounds, start=1):
+        if item.get("track") != "SFX":
+            problems.append(f"sound effect {index} must target SFX")
+        if float(item.get("volume", 1.0)) > max_volume:
+            problems.append(f"sound effect {index} exceeds narration-safe volume")
+        if len(str(item.get("evidence", "")).strip()) < 8 or len(str(item.get("timing_reason", "")).strip()) < 8:
+            problems.append(f"sound effect {index} lacks approved timing evidence")
+    for left, right in zip(sounds, sounds[1:]):
+        if timeline_overlap(left, right) > 0:
+            problems.append(f"sound effects overlap: {left.get('beat_id')} and {right.get('beat_id')}")
+        if float(right.get("start", 0)) - float(left.get("start", 0)) < min_gap:
+            problems.append(f"sound effects are too close: {left.get('beat_id')} and {right.get('beat_id')}")
     return problems
 
 
@@ -919,6 +1014,7 @@ def validate(
         if data.get("visual_treatment_plan") and not item.get("character_intent"):
             problems.append(f"character effect lacks approved character_intent: {item.get('asset_id')}")
     problems.extend(effect_overlap_problems(data))
+    problems.extend(sound_plan_problems(data, taxonomy))
     style = taxonomy.get("style_profiles", {}).get(data.get("style"), {})
     if len(data.get("visual_effects", [])) > int(style.get("max_scene_effects", 10**9)):
         problems.append("scene-effect style budget exceeded")
@@ -1030,6 +1126,7 @@ def main() -> int:
     p_plan.add_argument("--taxonomy", type=Path, default=DEFAULT_TAXONOMY)
     p_plan.add_argument("--style", default="medical_education")
     p_plan.add_argument("--visual-treatments", type=Path, help="Approved visual-treatment plan; only requested effect families receive candidates")
+    p_plan.add_argument("--sfx-opportunities", type=Path, help="Approved SFX timing plan; only approved opportunities receive sound candidates")
     p_plan.add_argument("--output", type=Path, required=True)
     p_select = sub.add_parser("select", help="apply AI selections constrained to a plan's candidate shortlists")
     p_select.add_argument("--plan", type=Path, required=True)
@@ -1056,7 +1153,7 @@ def main() -> int:
             args.output.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
             emit("succeeded", args.command, {"output": str(args.output), "asset_count": result["asset_count"]})
         elif args.command == "plan":
-            result = plan(args.beats, args.catalog, args.taxonomy, args.style, args.visual_treatments)
+            result = plan(args.beats, args.catalog, args.taxonomy, args.style, args.visual_treatments, args.sfx_opportunities)
             args.output.parent.mkdir(parents=True, exist_ok=True)
             args.output.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
             emit("succeeded", args.command, {

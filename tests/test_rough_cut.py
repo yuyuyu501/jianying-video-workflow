@@ -28,6 +28,23 @@ class RoughCutPaceTests(unittest.TestCase):
         self.assertAlmostEqual((10.25 - end) + (start - 10.0), 0.18, places=6)
         self.assertAlmostEqual(end - start, 0.07, places=6)
 
+    def test_adjacent_silence_fragments_are_merged_before_tightening(self):
+        merged = rough_cut.merge_silence_ranges([
+            (31.519, 31.755),
+            (31.755, 31.959),
+        ])
+        self.assertEqual(merged, [(31.519, 31.959)])
+        exclusion = rough_cut.pause_exclusion(*merged[0], 0.18)
+        self.assertIsNotNone(exclusion)
+        self.assertAlmostEqual(exclusion[1] - exclusion[0], 0.26, places=6)
+
+    def test_silence_fragments_with_real_speech_gap_stay_separate(self):
+        merged = rough_cut.merge_silence_ranges([
+            (10.0, 10.2),
+            (10.24, 10.5),
+        ])
+        self.assertEqual(merged, [(10.0, 10.2), (10.24, 10.5)])
+
     def test_no_speed_when_density_is_in_band(self):
         with tempfile.TemporaryDirectory() as temporary:
             analysis = self.analysis(Path(temporary), 100, 20.0)

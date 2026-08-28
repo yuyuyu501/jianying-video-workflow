@@ -23,7 +23,17 @@
       "min_score": 2.0,
       "max_same_effect_per_plan": 2,
       "repeat_cooldown_seconds": 30.0,
-      "allow_no_effect": true
+      "allow_no_effect": true,
+      "max_per_minute": 2.0,
+      "max_total": 12,
+      "min_gap_seconds": 3.0,
+      "max_same_cue_type_per_plan": 3,
+      "min_volume": 0.05,
+      "max_volume": 0.18,
+      "default_volume": 0.12,
+      "max_duration": 1.5,
+      "opening_guard_seconds": 0.8,
+      "require_no_effect_reason": true
     },
     "character": {
       "candidate_limit": 8,
@@ -58,6 +68,11 @@
     "图解": "instructional_illustration",
     "示意": "instructional_illustration",
     "医学": "instructional_illustration",
+    "可爱": "cartoon",
+    "猫": "cartoon",
+    "狗": "cartoon",
+    "犬": "cartoon",
+    "便便": "cartoon",
     "神明": "fantasy",
     "妖": "fantasy",
     "魔法": "fantasy",
@@ -66,11 +81,16 @@
   "style_profiles": {
     "medical_education": {
       "preferred": ["restrained", "documentary", "warning", "confirmation", "scan", "whoosh"],
-      "forbidden": ["comedy", "fireworks", "celebration", "laugh", "explosion", "fantasy", "person_transformation"],
+      "forbidden": ["cartoon", "comedy", "fireworks", "celebration", "laugh", "explosion", "fantasy", "person_transformation"],
       "max_visual_intensity": 0.72,
       "max_audio_intensity": 0.55,
       "max_scene_effects": 8,
       "max_character_effects": 3,
+      "max_sound_effects": 8,
+      "max_sfx_per_minute": 1.5,
+      "min_sfx_gap_seconds": 4.0,
+      "max_same_sfx_cue_type": 2,
+      "max_sfx_volume": 0.14,
       "preferred_visual_treatments": ["broll", "chapter_title", "information_card", "caption_highlight", "instructional_illustration", "motion_graphic"],
       "character_effect_policy": "sparse_face_specific_only"
     },
@@ -78,7 +98,12 @@
       "preferred": ["impact", "transition", "highlight", "notification"],
       "forbidden": [],
       "max_visual_intensity": 0.9,
-      "max_audio_intensity": 0.8
+      "max_audio_intensity": 0.8,
+      "max_sound_effects": 12,
+      "max_sfx_per_minute": 2.5,
+      "min_sfx_gap_seconds": 2.5,
+      "max_same_sfx_cue_type": 3,
+      "max_sfx_volume": 0.18
     }
   },
   "beat_purposes": {
@@ -110,6 +135,11 @@
     "general": {
       "preferred": ["person", "restrained", "highlight", "confirmation"],
       "forbidden": ["cartoon", "comedy", "celebration", "fireworks"],
+      "max_duration": 1.0
+    },
+    "outro": {
+      "preferred": ["person", "confirmation", "scan", "highlight"],
+      "forbidden": ["cartoon", "comedy", "fantasy", "explosion", "fireworks"],
       "max_duration": 1.0
     }
   },
