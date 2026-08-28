@@ -56,12 +56,16 @@ draft skeleton before asset selection so every later write has a fixed target.
 6. **Catalog**: run `scripts/asset_director.py catalog` against the local
    JianYing data directory. Use real IDs from `video_scene_effects.csv` and
    `cloud_sound_effects.csv`; never invent IDs from names.
-7. **SFX timing review**: run `scripts/sfx_timing_director.py template` against
-   the final-timeline beats and optional B-roll plan. Review semantic emphasis,
-   chapter changes, visual transitions, action hits, warnings, confirmations,
-   timers, notifications, and the outro. Approve only precise triggers that
-   improve comprehension; mark every other beat skipped with a reason. The
-   validator enforces style-specific density, minimum spacing, cue-type
+7. **Audiovisual event timeline and SFX timing review**: after caption, card,
+   B-roll, sticker, scene-effect, and character-effect planning, run
+   `scripts/av_event_timeline.py` to merge their onsets with semantic beats on
+   the rendered rough-cut timeline. Then run `scripts/sfx_timing_director.py
+   template --av-events ...`. Review each audiovisual event rather than adding
+   one generic cue per beat. Use `light` micro-SFX for text/UI entrances,
+   `medium` cues for transitions and effect onsets, and `strong` cues only for
+   critical warnings. Every approved cue must retain `linked_event_id` and stay
+   within 0.12 seconds of that event. Mark all unused events skipped with a
+   reason. The validator enforces total and per-tier density, spacing,
    repetition, duration, opening restraint, and narration-safe volume. An empty
    plan is valid only with a specific `skip_reason`.
 8. **Shortlist**: validate the approved visual-treatment and SFX timing plans,
@@ -151,11 +155,12 @@ draft skeleton before asset selection so every later write has a fixed target.
   timestamped frame evidence on the selected effect item.
 - Keep short SFX below narration. Start with approximately -12 to -18 dB
   relative to the spoken voice and verify by listening, not only by numbers.
-- Default to sparse accents: approximately 1.5 SFX per minute for medical or
-  educational speech and at most 2.5 per minute for a general short video.
-  Keep at least 4 seconds between medical cues, do not overlap SFX, do not use
-  one cue type more than twice in a medical edit, and do not repeat the same
-  library asset more than twice in the plan. These are upper bounds, not quotas.
+- Use layered medical/educational ceilings: up to 4 light text/UI micro-cues,
+  2 medium transition/effect cues, and 1 strong warning cue per minute, with an
+  overall ceiling of 5 per minute. Same-tier minimum spacing is 0.35 seconds
+  for light, 1.25 seconds for medium, and 4 seconds for strong cues. Do not
+  overlap SFX or repeat the same library asset more than twice. These are upper
+  bounds, not quotas; every cue still needs a reviewed audiovisual event.
 - Do not place visual effects over the subtitle zone, title zone, or PiP face
   unless the effect is specifically designed as a full-screen overlay and the
   preview shows no loss of legibility.
@@ -239,12 +244,13 @@ python scripts/asset_director.py validate `
   --catalog work/asset_catalog.json
 ```
 
-Prepare and approve SFX opportunities before exposing library candidates:
+Prepare and approve event-linked SFX opportunities before exposing library candidates:
 
 ```powershell
-python scripts/sfx_timing_director.py template --beats work/beats.json --broll-plan work/broll_plan.json --output work/sfx_timing_plan.template.json
-python scripts/sfx_timing_director.py validate --plan work/sfx_timing_plan.approved.json --beats work/beats.json --output work/sfx_timing_plan.qc.json
-python scripts/asset_director.py plan --beats work/beats.json --catalog work/asset_catalog.json --visual-treatments work/visual_treatment_plan.approved.json --sfx-opportunities work/sfx_timing_plan.approved.json --output work/candidate_plan.json
+python scripts/av_event_timeline.py --beats work/beats.json --caption-plan work/caption_plan.approved.json --broll-plan work/broll_plan.json --visual-treatment-plan work/visual_treatment_plan.approved.json --asset-plan work/selected_plan.json --sticker-plan work/sticker_plan.approved.json --output work/av_event_timeline.json
+python scripts/sfx_timing_director.py template --beats work/beats.json --av-events work/av_event_timeline.json --output work/sfx_timing_plan.template.json
+python scripts/sfx_timing_director.py validate --plan work/sfx_timing_plan.approved.json --beats work/beats.json --av-events work/av_event_timeline.json --output work/sfx_timing_plan.qc.json
+python scripts/asset_director.py plan --beats work/beats.json --catalog work/asset_catalog.json --visual-treatments work/visual_treatment_plan.approved.json --sfx-opportunities work/sfx_timing_plan.approved.json --av-events work/av_event_timeline.json --output work/candidate_plan.json
 ```
 
 After JianYing has rendered the materialized draft, extract effect review clips

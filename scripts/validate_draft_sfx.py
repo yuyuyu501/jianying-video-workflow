@@ -47,6 +47,9 @@ def validate(document: dict, asset_plan: dict, expected_count: int | None = None
     }
     errors: list[str] = []
     frozen_paths: list[str] = []
+    timing_plan = asset_plan.get("sfx_timing_plan") or {}
+    event_mode = timing_plan.get("source_mode") == "av_events"
+    linked_event_ids: set[str] = set()
     if track is None:
         errors.append("SFX audio track does not exist")
     required_count = len(expected) if expected_count is None else expected_count
@@ -57,6 +60,19 @@ def validate(document: dict, asset_plan: dict, expected_count: int | None = None
 
     previous_end = -1
     for index, (planned, segment) in enumerate(zip(expected, segments), start=1):
+        if event_mode:
+            linked_event_id = str(planned.get("linked_event_id", "")).strip()
+            event_id = str(planned.get("event_id", "")).strip()
+            if not linked_event_id:
+                errors.append(f"SFX {index} lacks linked_event_id from the approved audiovisual event")
+            elif linked_event_id in linked_event_ids:
+                errors.append(f"SFX {index} reuses linked_event_id {linked_event_id}")
+            else:
+                linked_event_ids.add(linked_event_id)
+            if event_id and linked_event_id and event_id != linked_event_id:
+                errors.append(f"SFX {index} event_id does not match linked_event_id")
+            if str(planned.get("intensity_tier", "")) not in {"light", "medium", "strong"}:
+                errors.append(f"SFX {index} lacks a valid event intensity tier")
         target = segment.get("target_timerange", {})
         start_us = int(target.get("start", -1))
         duration_us = int(target.get("duration", 0))
@@ -88,6 +104,7 @@ def validate(document: dict, asset_plan: dict, expected_count: int | None = None
         "sfx_track_count": 1 if track else 0,
         "sfx_segment_count": len(segments),
         "expected_count": required_count,
+        "event_linked_count": len(linked_event_ids),
         "frozen_local_paths": frozen_paths,
         "errors": errors,
     }

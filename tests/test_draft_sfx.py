@@ -44,6 +44,22 @@ class DraftSfxTests(unittest.TestCase):
             report = validator.validate(document, plan, expected_count=1)
             self.assertEqual(report["status"], "failed")
 
+    def test_event_mode_requires_event_linkage(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "asset123_cue.mp3"
+            path.write_bytes(b"audio")
+            document, plan = self.fixture(path)
+            plan["sfx_timing_plan"] = {"source_mode": "av_events"}
+            report = validator.validate(document, plan, expected_count=1)
+            self.assertEqual(report["status"], "failed")
+            plan["sound_effects"][0].update({
+                "event_id": "caption_entrance:cue-0001",
+                "linked_event_id": "caption_entrance:cue-0001",
+                "intensity_tier": "light",
+            })
+            report = validator.validate(document, plan, expected_count=1)
+            self.assertEqual(report["status"], "passed", report["errors"])
+
 
 if __name__ == "__main__":
     unittest.main()

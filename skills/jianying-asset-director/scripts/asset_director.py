@@ -307,6 +307,14 @@ def selection_rules(taxonomy: Dict[str, Any], asset_type: str) -> Dict[str, Any]
         "require_visual_evidence": False,
         "require_no_effect_reason": False,
     }
+    if asset_type == "sound":
+        defaults.update({
+            "candidate_limit": 10, "repeat_cooldown_seconds": 30.0,
+            "min_gap_seconds": 0.35,
+            "same_tier_min_gap_seconds": {"light": 0.35, "medium": 1.25, "strong": 4.0},
+            "tier_max_duration": {"light": 0.5, "medium": 0.9, "strong": 1.2},
+            "tier_max_volume": {"light": 0.08, "medium": 0.12, "strong": 0.14},
+        })
     rules = dict(defaults)
     rules.update(selection.get(asset_type, {}))
     return rules
@@ -506,6 +514,7 @@ def load_sfx_opportunities(
     path: Path | None,
     beats: List[Dict[str, Any]],
     taxonomy_path: Path,
+    av_events_path: Path | None = None,
 ) -> Tuple[Dict[str, Dict[str, Any]], Dict[str, Any] | None]:
     if path is None:
         return {}, None
@@ -516,15 +525,20 @@ def load_sfx_opportunities(
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     payload = load_json(path)
-    report = module.validate_payload(payload, beats, load_json(taxonomy_path))
+    events = module.event_list(load_json(av_events_path)) if av_events_path else None
+    report = module.validate_payload(payload, beats, load_json(taxonomy_path), events)
     if not report.get("valid"):
         raise ValueError("invalid SFX timing plan: " + "; ".join(report.get("problems", [])))
     selected = {
-        str(item["beat_id"]): item
+        str(item.get("event_id") or item["beat_id"]): item
         for item in payload.get("opportunities", [])
         if isinstance(item, dict) and item.get("use_sfx") is True
     }
-    return selected, {"source": str(path), "status": "approved", "review": report}
+    return selected, {
+        "source": str(path), "status": "approved", "review": report,
+        "source_mode": report.get("source_mode", "legacy_beats"),
+        "av_event_timeline": str(av_events_path) if av_events_path else payload.get("av_event_timeline"),
+    }
 
 
 def plan(
@@ -534,10 +548,11 @@ def plan(
     style_name: str,
     visual_treatments_path: Path | None = None,
     sfx_opportunities_path: Path | None = None,
+    av_events_path: Path | None = None,
 ) -> Dict[str, Any]:
     beats = beat_list(load_json(beats_path))
     visual_treatments, treatment_record = load_visual_treatments(visual_treatments_path, beats)
-    sfx_opportunities, sfx_record = load_sfx_opportunities(sfx_opportunities_path, beats, taxonomy_path)
+    sfx_opportunities, sfx_record = load_sfx_opportunities(sfx_opportunities_path, beats, taxonomy_path, av_events_path)
     cat = load_json(catalog_path)
     taxonomy = load_json(taxonomy_path)
     style = taxonomy.get("style_profiles", {}).get(style_name, taxonomy.get("style_profiles", {}).get("general_short_video", {}))
@@ -563,14 +578,17 @@ def plan(
         allow_scene = not treatment_record or "scene_effect" in approved_effect_treatments
         allow_character = not treatment_record or "character_effect" in approved_effect_treatments
         ranked_visual = rank_candidates(visual_assets, purpose, style, taxonomy, "visual") if allow_scene else []
-        sfx_opportunity = sfx_opportunities.get(str(beat["beat_id"]))
-        if sfx_opportunity:
-            beat["sfx_opportunity"] = sfx_opportunity
+        beat_opportunities = [item for item in sfx_opportunities.values() if str(item.get("beat_id")) == str(beat["beat_id"])]
+        if beat_opportunities:
+            beat["sfx_opportunities"] = beat_opportunities
+            if len(beat_opportunities) == 1:
+                beat["sfx_opportunity"] = beat_opportunities[0]
             beat["sound_track"] = "SFX"
-            beat["volume"] = float(sfx_opportunity["volume"])
+            beat["volume"] = float(beat_opportunities[0]["volume"])
+        sfx_opportunity = beat_opportunities[0] if beat_opportunities else None
         cue_type = str((sfx_opportunity or {}).get("cue_type", ""))
         sound_purpose = cue_type if cue_type in taxonomy.get("beat_purposes", {}) else purpose
-        allow_sound = not sfx_record or sfx_opportunity is not None
+        allow_sound = not sfx_record or bool(beat_opportunities)
         ranked_sound = rank_candidates(sound_assets, sound_purpose, style, taxonomy, "sound") if allow_sound else []
         character_allowed, character_reason = character_effect_eligibility(beat)
         if not allow_character:
@@ -595,6 +613,34 @@ def plan(
             candidate_record(score, reasons, asset)
             for score, reasons, asset in sound_shortlist
         ]
+        if beat_opportunities:
+            beat["sound_opportunity_candidates"] = [
+                {
+                    "event_id": str(opportunity.get("event_id") or opportunity.get("beat_id")),
+                    "linked_event_id": str(opportunity.get("linked_event_id") or opportunity.get("event_id") or opportunity.get("beat_id")),
+                    "beat_id": beat["beat_id"],
+                    "cue_type": opportunity.get("cue_type"),
+                    "intensity_tier": opportunity.get("intensity_tier", "medium"),
+                    "trigger_time": opportunity.get("trigger_time"),
+                    "suggested_duration": opportunity.get("suggested_duration"),
+                    "volume": opportunity.get("volume"),
+                    "evidence": opportunity.get("evidence"),
+                    "reason": opportunity.get("reason"),
+                    "sound_candidates": [
+                        candidate_record(score, reasons, asset)
+                        for score, reasons, asset in shortlist_candidates(
+                            rank_candidates(
+                                sound_assets,
+                                str(opportunity.get("cue_type", purpose)) if str(opportunity.get("cue_type", purpose)) in taxonomy.get("beat_purposes", {}) else purpose,
+                                style, taxonomy, "sound",
+                            ),
+                            str(opportunity.get("cue_type", purpose)) if str(opportunity.get("cue_type", purpose)) in taxonomy.get("beat_purposes", {}) else purpose,
+                            style, taxonomy, int(sound_rules["candidate_limit"]),
+                        )
+                    ],
+                }
+                for opportunity in beat_opportunities
+            ]
         beat["character_candidates"] = [
             candidate_record(score, reasons, asset)
             for score, reasons, asset in character_shortlist
@@ -604,6 +650,7 @@ def plan(
             "beat_id": beat["beat_id"],
             "visual_candidate_count": len(beat["visual_candidates"]),
             "sound_candidate_count": len(beat["sound_candidates"]),
+            "sound_opportunity_count": len(beat_opportunities),
             "character_candidate_count": len(beat["character_candidates"]),
             "visual_selected": None,
             "sound_selected": None,
@@ -613,7 +660,7 @@ def plan(
             "character_status": "awaiting_ai_review" if character_allowed else "ineligible_no_effect",
         })
     return {
-        "version": 4,
+        "version": 5,
         "style": style_name,
         "selection": {"visual": visual_rules, "sound": sound_rules, "character": character_rules},
         "beats": beats,
@@ -666,7 +713,7 @@ def selected_item(
         track = str(beat.get("sound_track", "SFX"))
         if track != "SFX":
             raise ValueError(f"sound effect track must be 'SFX' for the validated draft skeleton, got {track!r}")
-        opportunity = beat.get("sfx_opportunity", {})
+        opportunity = selection.get("_sfx_opportunity") or beat.get("sfx_opportunity", {})
         start = float(selection.get("sound_effect_start", opportunity.get("trigger_time", beat["start"])))
         duration = float(selection.get("sound_effect_duration", opportunity.get("suggested_duration", max_duration)))
         item["start"] = start
@@ -674,6 +721,9 @@ def selected_item(
         item["track"] = track
         item["volume"] = float(opportunity.get("volume", beat.get("volume", 0.12)))
         item["cue_type"] = opportunity.get("cue_type")
+        item["intensity_tier"] = opportunity.get("intensity_tier", "medium")
+        item["event_id"] = opportunity.get("event_id")
+        item["linked_event_id"] = opportunity.get("linked_event_id", opportunity.get("event_id"))
         item["evidence"] = str(opportunity.get("evidence", "")).strip()
         item["timing_reason"] = str(opportunity.get("reason", "")).strip()
     for key in ("resource_id", "effect_id", "md5", "source_identifier"):
@@ -698,6 +748,18 @@ def apply_selections(plan_path: Path, selections_path: Path, taxonomy_path: Path
             raise ValueError(f"duplicate selection for beat: {beat_id}")
         selection_by_beat[beat_id] = selection
 
+    sound_event_selections = selections_payload.get("sound_event_selections", []) if isinstance(selections_payload, dict) else []
+    if not isinstance(sound_event_selections, list):
+        raise ValueError("sound_event_selections must be an array")
+    sound_selection_by_event = {}
+    for selection in sound_event_selections:
+        if not isinstance(selection, dict) or not selection.get("event_id"):
+            raise ValueError("every sound event selection requires event_id")
+        event_id = str(selection["event_id"])
+        if event_id in sound_selection_by_event:
+            raise ValueError(f"duplicate sound event selection: {event_id}")
+        sound_selection_by_event[event_id] = selection
+
     taxonomy = load_json(taxonomy_path)
     visual_rules = selection_rules(taxonomy, "visual")
     sound_rules = selection_rules(taxonomy, "sound")
@@ -717,6 +779,8 @@ def apply_selections(plan_path: Path, selections_path: Path, taxonomy_path: Path
             ("sound", sound_effects, sound_effects, sound_rules),
             ("character", character_effects, character_effects, character_rules),
         ):
+            if asset_type == "sound" and beat.get("sfx_opportunities"):
+                continue
             selected_id = selection.get(f"{asset_type}_asset_id")
             candidates = {item["asset_id"]: item for item in beat.get(f"{asset_type}_candidates", [])}
             if asset_type == "character" and selected_id is not None and not beat.get("character_effect_eligibility", {}).get("eligible"):
@@ -781,6 +845,47 @@ def apply_selections(plan_path: Path, selections_path: Path, taxonomy_path: Path
             if asset_type in ("visual", "character"):
                 decision[f"{asset_type}_evidence"] = str(selection.get(f"{asset_type}_evidence", "")).strip()
                 decision[f"{asset_type}_evidence_time"] = selection.get(f"{asset_type}_evidence_time")
+        if beat.get("sfx_opportunities"):
+            sound_decisions = []
+            opportunity_candidate_map = {
+                str(item.get("event_id")): {candidate["asset_id"]: candidate for candidate in item.get("sound_candidates", [])}
+                for item in beat.get("sound_opportunity_candidates", [])
+            }
+            for opportunity in beat["sfx_opportunities"]:
+                event_id = str(opportunity.get("event_id") or opportunity.get("beat_id"))
+                candidates = opportunity_candidate_map.get(event_id, {item["asset_id"]: item for item in beat.get("sound_candidates", [])})
+                if event_id not in sound_selection_by_event:
+                    raise ValueError(f"missing sound event selection: {event_id}")
+                sound_selection = sound_selection_by_event[event_id]
+                selected_id = sound_selection.get("sound_asset_id")
+                event_decision = {"event_id": event_id, "beat_id": beat_id, "reason": sound_selection.get("reason", "")}
+                if selected_id is None:
+                    no_effect_reason = str(sound_selection.get("sound_no_effect_reason", sound_selection.get("reason", ""))).strip()
+                    if candidates and sound_rules.get("require_no_effect_reason", False) and len(no_effect_reason) < 8:
+                        raise ValueError(f"sound no-effect decision requires a grounded reason for event: {event_id}")
+                    event_decision.update({"sound_selected": None, "sound_status": "no_effect", "sound_no_effect_reason": no_effect_reason})
+                    sound_decisions.append(event_decision)
+                    continue
+                if selected_id not in candidates:
+                    raise ValueError(f"sound selection is not in shortlist for event {event_id}: {selected_id}")
+                problem = diversity_problem(str(selected_id), float(opportunity["trigger_time"]), sound_effects, sound_rules, "sound")
+                if problem:
+                    raise ValueError(problem)
+                enriched = {**sound_selection, "_sfx_opportunity": opportunity}
+                item = selected_item(beat, candidates[selected_id], "sound", taxonomy, enriched)
+                trigger_time = float(opportunity.get("trigger_time", item["start"]))
+                approved_duration = float(opportunity.get("suggested_duration", item["duration"]))
+                if abs(float(item["start"]) - trigger_time) > 0.12:
+                    raise ValueError(f"sound effect timing is detached from the linked AV event: {event_id}")
+                if float(item["duration"]) > approved_duration + 0.001:
+                    raise ValueError(f"sound effect duration exceeds the approved event opportunity: {event_id}")
+                if float(item["start"]) < float(beat["start"]) - 0.05 or float(item["start"]) > float(beat["end"]) + 0.05:
+                    raise ValueError(f"sound effect timing is outside beat {beat_id}")
+                sound_effects.append(item)
+                event_decision.update({"sound_selected": selected_id, "sound_status": "selected"})
+                sound_decisions.append(event_decision)
+            decision["sound_events"] = sound_decisions
+            decision["sound_status"] = "event_selections_applied"
         decisions.append(decision)
 
     data["visual_effects"] = visual_effects
@@ -834,10 +939,15 @@ def sound_plan_problems(data: Dict[str, Any], taxonomy: Dict[str, Any]) -> List[
     problems: List[str] = []
     rules = selection_rules(taxonomy, "sound")
     sounds = sorted(data.get("sound_effects", []), key=lambda item: float(item.get("start", 0)))
+    timing_plan = data.get("sfx_timing_plan") or {}
+    event_mode = timing_plan.get("source_mode") == "av_events"
     style = taxonomy.get("style_profiles", {}).get(data.get("style"), {})
     max_total = int(style.get("max_sound_effects", rules.get("max_total", 10**9)))
     max_volume = float(style.get("max_sfx_volume", rules.get("max_volume", 0.18)))
-    min_gap = float(style.get("min_sfx_gap_seconds", rules.get("min_gap_seconds", 3.0)))
+    min_gap = float(style.get("min_sfx_gap_seconds", rules.get("min_gap_seconds", 0.35)))
+    tier_max_volume = style.get("sfx_tier_max_volume", rules.get("tier_max_volume", {}))
+    tier_max_duration = style.get("sfx_tier_max_duration", rules.get("tier_max_duration", {}))
+    tier_min_gap = style.get("sfx_tier_min_gap_seconds", rules.get("same_tier_min_gap_seconds", {}))
     if len(sounds) > max_total:
         problems.append(f"sound-effect style budget exceeded: {len(sounds)} > {max_total}")
     for index, item in enumerate(sounds, start=1):
@@ -845,12 +955,25 @@ def sound_plan_problems(data: Dict[str, Any], taxonomy: Dict[str, Any]) -> List[
             problems.append(f"sound effect {index} must target SFX")
         if float(item.get("volume", 1.0)) > max_volume:
             problems.append(f"sound effect {index} exceeds narration-safe volume")
+        tier = str(item.get("intensity_tier", "medium"))
+        if event_mode:
+            if tier not in {"light", "medium", "strong"}:
+                problems.append(f"sound effect {index} has invalid intensity tier")
+            elif tier_max_volume and float(item.get("volume", 1.0)) > float(tier_max_volume.get(tier, max_volume)):
+                problems.append(f"sound effect {index} exceeds {tier} tier volume")
+            if tier_max_duration and float(item.get("duration", 0)) > float(tier_max_duration.get(tier, 1.5)):
+                problems.append(f"sound effect {index} exceeds {tier} tier duration")
+            if not str(item.get("linked_event_id", "")).strip():
+                problems.append(f"sound effect {index} lacks linked_event_id")
         if len(str(item.get("evidence", "")).strip()) < 8 or len(str(item.get("timing_reason", "")).strip()) < 8:
             problems.append(f"sound effect {index} lacks approved timing evidence")
     for left, right in zip(sounds, sounds[1:]):
         if timeline_overlap(left, right) > 0:
             problems.append(f"sound effects overlap: {left.get('beat_id')} and {right.get('beat_id')}")
-        if float(right.get("start", 0)) - float(left.get("start", 0)) < min_gap:
+        required_gap = min_gap
+        if event_mode and str(left.get("intensity_tier", "medium")) == str(right.get("intensity_tier", "medium")) and tier_min_gap:
+            required_gap = max(required_gap, float(tier_min_gap.get(str(left.get("intensity_tier", "medium")), min_gap)))
+        if float(right.get("start", 0)) - float(left.get("start", 0)) < required_gap:
             problems.append(f"sound effects are too close: {left.get('beat_id')} and {right.get('beat_id')}")
     return problems
 
@@ -1127,6 +1250,7 @@ def main() -> int:
     p_plan.add_argument("--style", default="medical_education")
     p_plan.add_argument("--visual-treatments", type=Path, help="Approved visual-treatment plan; only requested effect families receive candidates")
     p_plan.add_argument("--sfx-opportunities", type=Path, help="Approved SFX timing plan; only approved opportunities receive sound candidates")
+    p_plan.add_argument("--av-events", type=Path, help="Unified audiovisual event timeline used to validate event-linked SFX opportunities")
     p_plan.add_argument("--output", type=Path, required=True)
     p_select = sub.add_parser("select", help="apply AI selections constrained to a plan's candidate shortlists")
     p_select.add_argument("--plan", type=Path, required=True)
@@ -1153,7 +1277,7 @@ def main() -> int:
             args.output.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
             emit("succeeded", args.command, {"output": str(args.output), "asset_count": result["asset_count"]})
         elif args.command == "plan":
-            result = plan(args.beats, args.catalog, args.taxonomy, args.style, args.visual_treatments, args.sfx_opportunities)
+            result = plan(args.beats, args.catalog, args.taxonomy, args.style, args.visual_treatments, args.sfx_opportunities, args.av_events)
             args.output.parent.mkdir(parents=True, exist_ok=True)
             args.output.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
             emit("succeeded", args.command, {

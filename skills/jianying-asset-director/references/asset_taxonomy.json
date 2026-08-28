@@ -1,5 +1,5 @@
 {
-  "version": 4,
+  "version": 5,
   "visual_treatment_policy": {
     "priority_purposes": ["warning", "chapter", "correct_action", "time_pressure", "emergency_call"],
     "allowed": ["none", "broll", "chapter_title", "information_card", "caption_highlight", "sticker", "instructional_illustration", "motion_graphic", "scene_effect", "character_effect"],
@@ -24,15 +24,23 @@
       "max_same_effect_per_plan": 2,
       "repeat_cooldown_seconds": 30.0,
       "allow_no_effect": true,
-      "max_per_minute": 2.0,
-      "max_total": 12,
-      "min_gap_seconds": 3.0,
-      "max_same_cue_type_per_plan": 3,
-      "min_volume": 0.05,
+      "max_per_minute": 5.0,
+      "max_total": 24,
+      "min_gap_seconds": 0.35,
+      "same_tier_min_gap_seconds": {"light": 0.35, "medium": 1.25, "strong": 4.0},
+      "tier_max_per_minute": {"light": 4.0, "medium": 2.0, "strong": 1.0},
+      "tier_max_total": {"light": 18, "medium": 8, "strong": 4},
+      "tier_max_duration": {"light": 0.5, "medium": 0.9, "strong": 1.2},
+      "tier_max_volume": {"light": 0.08, "medium": 0.12, "strong": 0.14},
+      "tier_default_duration": {"light": 0.25, "medium": 0.55, "strong": 0.8},
+      "tier_default_volume": {"light": 0.06, "medium": 0.1, "strong": 0.12},
+      "max_same_cue_type_per_plan": 6,
+      "min_volume": 0.03,
       "max_volume": 0.18,
       "default_volume": 0.12,
       "max_duration": 1.5,
       "opening_guard_seconds": 0.8,
+      "sync_tolerance_seconds": 0.12,
       "require_no_effect_reason": true
     },
     "character": {
@@ -86,11 +94,17 @@
       "max_audio_intensity": 0.55,
       "max_scene_effects": 8,
       "max_character_effects": 3,
-      "max_sound_effects": 8,
-      "max_sfx_per_minute": 1.5,
-      "min_sfx_gap_seconds": 4.0,
-      "max_same_sfx_cue_type": 2,
+      "max_sound_effects": 24,
+      "max_sfx_per_minute": 5.0,
+      "min_sfx_gap_seconds": 0.35,
+      "max_same_sfx_cue_type": 6,
       "max_sfx_volume": 0.14,
+      "sfx_tier_max_per_minute": {"light": 4.0, "medium": 2.0, "strong": 1.0},
+      "sfx_tier_max_total": {"light": 18, "medium": 8, "strong": 4},
+      "sfx_tier_max_duration": {"light": 0.5, "medium": 0.9, "strong": 1.2},
+      "sfx_tier_max_volume": {"light": 0.08, "medium": 0.12, "strong": 0.14},
+      "sfx_tier_min_gap_seconds": {"light": 0.35, "medium": 1.25, "strong": 4.0},
+      "sfx_sync_tolerance_seconds": 0.12,
       "preferred_visual_treatments": ["broll", "chapter_title", "information_card", "caption_highlight", "instructional_illustration", "motion_graphic"],
       "character_effect_policy": "sparse_face_specific_only"
     },
@@ -99,10 +113,10 @@
       "forbidden": [],
       "max_visual_intensity": 0.9,
       "max_audio_intensity": 0.8,
-      "max_sound_effects": 12,
-      "max_sfx_per_minute": 2.5,
-      "min_sfx_gap_seconds": 2.5,
-      "max_same_sfx_cue_type": 3,
+      "max_sound_effects": 30,
+      "max_sfx_per_minute": 7.0,
+      "min_sfx_gap_seconds": 0.25,
+      "max_same_sfx_cue_type": 8,
       "max_sfx_volume": 0.18
     }
   },
@@ -131,6 +145,36 @@
       "preferred": ["notification", "emergency", "confirmation"],
       "forbidden": ["comedy", "cartoon", "celebration", "fireworks"],
       "max_duration": 1.4
+    },
+    "caption_pop": {
+      "preferred": ["notification", "confirmation", "restrained"],
+      "forbidden": ["cartoon", "comedy", "explosion", "fireworks"],
+      "max_duration": 0.5
+    },
+    "keyword_hit": {
+      "preferred": ["impact", "notification", "warning", "restrained"],
+      "forbidden": ["cartoon", "comedy", "celebration", "fireworks"],
+      "max_duration": 0.5
+    },
+    "card_entrance": {
+      "preferred": ["whoosh", "scan", "notification", "restrained"],
+      "forbidden": ["cartoon", "comedy", "explosion", "fireworks"],
+      "max_duration": 0.9
+    },
+    "sticker_pop": {
+      "preferred": ["notification", "confirmation", "restrained"],
+      "forbidden": ["cartoon", "comedy", "explosion", "fireworks"],
+      "max_duration": 0.5
+    },
+    "effect_sync": {
+      "preferred": ["impact", "scan", "transition", "restrained"],
+      "forbidden": ["cartoon", "comedy", "celebration", "fireworks"],
+      "max_duration": 0.9
+    },
+    "visual_transition": {
+      "preferred": ["whoosh", "transition", "scan", "restrained"],
+      "forbidden": ["cartoon", "comedy", "explosion", "fireworks"],
+      "max_duration": 0.9
     },
     "general": {
       "preferred": ["person", "restrained", "highlight", "confirmation"],

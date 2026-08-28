@@ -28,7 +28,8 @@ video-understand (external)
 -> AI review of role, keyword spans, hierarchy, safe position, and collisions for every caption cue
 -> one-treatment-per-beat visual plan: editorial composition before effect search
 -> jianying-asset-director (bundled)
--> independent SFX timing review across semantic emphasis, transitions, and action hits
+-> unified audiovisual event timeline across captions, cards, B-roll, stickers, scene effects, and character effects
+-> independent event-linked SFX timing review with light/medium/strong density budgets
 -> sound-effect shortlist only for approved SFX opportunities
 -> scene-effect shortlist only where the approved visual treatment requests it
 -> face-intent-gated character-effect shortlist and AI selection
@@ -208,14 +209,16 @@ evidence, excessive reuse, style-budget violations, and scene/person overlap
 without an explicit reviewed layering reason.
 
 Sound effects are a separate reviewed stage, not a side effect of scene-effect
-selection. Generate `sfx_timing_plan.template.json` from the final-timeline
-beats and optional B-roll boundaries. Review every beat for semantic emphasis,
-chapter or visual transitions, action hits, warnings, confirmations, timers,
-notifications, and outro cues. Only approved opportunities receive a bounded
-JianYing sound-library shortlist. Medical/educational edits default to no more
-than 1.5 selected SFX per minute, 4 seconds between cues, at most two uses of
-one cue type, and volume no higher than 0.14. General short videos allow up to
-2.5 per minute and volume no higher than 0.18. These are ceilings rather than
+selection. First build `av_event_timeline.json` from final-timeline semantics,
+captions, cards, B-roll boundaries, stickers, and selected scene/person effects;
+then generate `sfx_timing_plan.template.json` from those events. Review each
+event for whether sound improves comprehension. Only approved opportunities
+receive a bounded JianYing sound-library shortlist. Medical/educational edits
+use layered ceilings rather than one blunt quota: light text/UI micro-cues may
+reach 4 per minute, medium transition/effect cues 2 per minute, and strong
+warning cues 1 per minute, while total density remains at most 5 per minute.
+Every selected cue stays within 0.12 seconds of its linked event, below narration,
+and within its tier's duration/volume budget. These are ceilings rather than
 targets. Empty SFX plans require a specific skip reason.
 
 The runner exposes this as `--approved-visual-treatment-plan`. A clean run with

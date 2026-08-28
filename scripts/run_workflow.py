@@ -79,6 +79,7 @@ def main() -> int:
     parser.add_argument("--prepare-speaker-pip", action="store_true", help="Run only the optional SpeakerPiP analysis/review stage after creating the draft skeleton; it writes review artifacts but does not modify the draft")
     parser.add_argument("--prepare-caption-design", action="store_true", help="Extract representative caption frames and write a semantic caption-plan template for AI review without modifying the draft")
     parser.add_argument("--prepare-sfx-timing", action="store_true", help="Analyze final-timeline beats and write a reviewed SFX opportunity template without modifying the draft")
+    parser.add_argument("--av-events", type=Path, help="Prebuilt unified audiovisual event timeline; otherwise the workflow builds one after caption/visual plans are available")
     parser.add_argument("--approved-asset-plan", type=Path, help="AI-approved selected asset plan used only with --materialize-draft")
     parser.add_argument("--approved-visual-treatment-plan", type=Path, help="Approved one-treatment-per-beat editorial plan; gates effect candidate generation and draft materialization")
     parser.add_argument("--approved-sfx-timing-plan", type=Path, help="Approved SFX opportunity plan; gates sound-effect candidate generation and draft materialization")
@@ -131,10 +132,12 @@ def main() -> int:
         raise ValueError("--materialize-draft requires --approved-caption-plan after representative-frame semantic/collision review")
     if args.materialize_draft and not args.approved_sfx_timing_plan:
         raise ValueError("--materialize-draft requires --approved-sfx-timing-plan; an empty approved plan must include a specific skip_reason")
-    if args.approved_visual_treatment_plan and not args.approved_sfx_timing_plan:
-        raise ValueError("--approved-visual-treatment-plan requires --approved-sfx-timing-plan so sound candidates cannot bypass timing review")
+    if args.approved_visual_treatment_plan and not args.approved_sfx_timing_plan and not args.prepare_sfx_timing:
+        raise ValueError("--approved-visual-treatment-plan requires --approved-sfx-timing-plan unless --prepare-sfx-timing is building the event-linked timing review first")
     if args.prepare_sfx_timing and not args.beats:
         raise ValueError("--prepare-sfx-timing requires --beats")
+    if args.prepare_sfx_timing and not (args.av_events or args.approved_caption_plan):
+        raise ValueError("--prepare-sfx-timing requires --approved-caption-plan or a prebuilt --av-events timeline so caption/card events are not omitted")
     if args.materialize_draft and not args.render_rough_cut:
         raise ValueError("--materialize-draft requires --render-rough-cut so it can import validated silent visual and narration artifacts")
     if args.prepare_speaker_pip and (not args.render_rough_cut or not args.beats):
@@ -144,7 +147,7 @@ def main() -> int:
     jianying_python = args.jianying_python or Path(os.environ.get("JY_PYTHON", "").strip() or sys.executable)
     if not jianying_python.is_file():
         raise FileNotFoundError(f"JianYing Python executable not found: {jianying_python}")
-    for path in (args.srt, args.speech_timeline, args.caption_review, args.broll_plan, args.approved_asset_plan, args.approved_visual_treatment_plan, args.approved_sfx_timing_plan, args.approved_effect_visual_review, args.effect_review_video, args.approved_filter_plan, args.approved_sticker_plan, args.approved_caption_plan, args.speaker_pip_visual_decisions, args.pace_reference_analysis):
+    for path in (args.srt, args.speech_timeline, args.caption_review, args.broll_plan, args.av_events, args.approved_asset_plan, args.approved_visual_treatment_plan, args.approved_sfx_timing_plan, args.approved_effect_visual_review, args.effect_review_video, args.approved_filter_plan, args.approved_sticker_plan, args.approved_caption_plan, args.speaker_pip_visual_decisions, args.pace_reference_analysis):
         if path and not path.is_file():
             raise FileNotFoundError(path)
     if args.exported_video and not args.exported_video.is_file():
@@ -371,6 +374,7 @@ def main() -> int:
     visual_treatment_validation = None
     sfx_timing_template = None
     sfx_timing_validation = None
+    av_event_timeline = args.av_events.resolve() if args.av_events else None
     if args.beats:
         visual_treatment_template = args.output_dir / "visual_treatment_plan.template.json"
         treatment_template_command = [
@@ -380,21 +384,43 @@ def main() -> int:
         if args.broll_plan:
             treatment_template_command.extend(["--broll-plan", str(args.broll_plan.resolve())])
         run(treatment_template_command)
+        if av_event_timeline is None and args.approved_caption_plan:
+            av_event_timeline = args.output_dir / "av_event_timeline.json"
+            av_command = [
+                sys.executable, str(skills["jianying-asset-director"] / "scripts" / "av_event_timeline.py"),
+                "--beats", str(args.beats.resolve()),
+                "--caption-plan", str(args.approved_caption_plan.resolve()),
+                "--output", str(av_event_timeline),
+            ]
+            if args.broll_plan:
+                av_command.extend(["--broll-plan", str(args.broll_plan.resolve())])
+            if args.approved_visual_treatment_plan:
+                av_command.extend(["--visual-treatment-plan", str(args.approved_visual_treatment_plan.resolve())])
+            if args.approved_asset_plan:
+                av_command.extend(["--asset-plan", str(args.approved_asset_plan.resolve())])
+            if args.approved_sticker_plan:
+                av_command.extend(["--sticker-plan", str(args.approved_sticker_plan.resolve())])
+            run(av_command)
         sfx_timing_template = args.output_dir / "sfx_timing_plan.template.json"
         sfx_timing_command = [
             sys.executable, str(skills["jianying-asset-director"] / "scripts" / "sfx_timing_director.py"), "template",
             "--beats", str(args.beats.resolve()), "--style", args.style, "--output", str(sfx_timing_template),
         ]
+        if av_event_timeline:
+            sfx_timing_command.extend(["--av-events", str(av_event_timeline)])
         if args.broll_plan:
             sfx_timing_command.extend(["--broll-plan", str(args.broll_plan.resolve())])
         run(sfx_timing_command)
         if args.approved_sfx_timing_plan:
             sfx_timing_validation = args.output_dir / "sfx_timing_plan.qc.json"
-            run([
+            sfx_validate_command = [
                 sys.executable, str(skills["jianying-asset-director"] / "scripts" / "sfx_timing_director.py"), "validate",
                 "--plan", str(args.approved_sfx_timing_plan.resolve()), "--beats", str(args.beats.resolve()),
                 "--output", str(sfx_timing_validation),
-            ])
+            ]
+            if av_event_timeline:
+                sfx_validate_command.extend(["--av-events", str(av_event_timeline)])
+            run(sfx_validate_command)
             if read_json(sfx_timing_validation).get("valid") is not True:
                 raise RuntimeError("SFX timing plan validation did not pass")
         if args.approved_visual_treatment_plan:
@@ -412,6 +438,8 @@ def main() -> int:
             ]
             if args.approved_sfx_timing_plan:
                 asset_plan_command.extend(["--sfx-opportunities", str(args.approved_sfx_timing_plan.resolve())])
+            if av_event_timeline:
+                asset_plan_command.extend(["--av-events", str(av_event_timeline)])
             run(asset_plan_command)
 
     finish_catalog = None
@@ -596,6 +624,7 @@ def main() -> int:
         "approved_visual_treatment_plan": str(args.approved_visual_treatment_plan.resolve()) if args.approved_visual_treatment_plan else None,
         "visual_treatment_plan_qc": str(visual_treatment_validation) if visual_treatment_validation else None,
         "sfx_timing_plan_template": str(sfx_timing_template) if sfx_timing_template else None,
+        "av_event_timeline": str(av_event_timeline) if av_event_timeline else None,
         "approved_sfx_timing_plan": str(args.approved_sfx_timing_plan.resolve()) if args.approved_sfx_timing_plan else None,
         "sfx_timing_plan_qc": str(sfx_timing_validation) if sfx_timing_validation else None,
         "effect_visual_review": str(args.approved_effect_visual_review.resolve()) if args.approved_effect_visual_review else None,

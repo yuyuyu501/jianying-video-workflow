@@ -169,6 +169,68 @@ class AssetDirectorTests(unittest.TestCase):
             self.assertEqual(output["beats"][1]["sound_candidates"], [])
             self.assertTrue(output["beats"][0]["sfx_opportunity"]["use_sfx"])
 
+    def test_event_sound_selection_preserves_linkage_and_tier(self):
+        with tempfile.TemporaryDirectory() as directory:
+            taxonomy_data = json.loads(json.dumps(TAXONOMY))
+            taxonomy_data["selection"]["sound"].update({
+                "min_gap_seconds": 0.2,
+                "same_tier_min_gap_seconds": {"light": 0.2, "medium": 0.5, "strong": 2.0},
+                "tier_max_duration": {"light": 0.5, "medium": 0.9, "strong": 1.2},
+                "tier_max_volume": {"light": 0.08, "medium": 0.12, "strong": 0.14},
+                "require_no_effect_reason": True,
+            })
+            taxonomy_data["beat_purposes"]["caption_pop"] = {"preferred": ["warning"], "forbidden": [], "max_duration": 0.5}
+            taxonomy = self.write_json(directory, "taxonomy.json", taxonomy_data)
+            sound = asset("sound", "轻提示音", ["warning"])
+            sound["asset_type"] = "sound_effect"
+            catalog = self.write_json(directory, "catalog.json", {"assets": [sound]})
+            beats = self.write_json(directory, "beats.json", {"beats": [{"beat_id": "one", "start": 1, "end": 4, "purpose": "warning"}]})
+            events = self.write_json(directory, "events.json", {"events": [{"event_id": "caption:one", "time": 2.0, "beat_id": "one"}]})
+            sfx = self.write_json(directory, "sfx.json", {
+                "style": "medical_education", "source_mode": "av_events", "skip_reason": "",
+                "ai_review": {"required": True, "status": "approved"},
+                "opportunities": [{
+                    "event_id": "caption:one", "linked_event_id": "caption:one", "beat_id": "one",
+                    "use_sfx": True, "status": "approved", "cue_type": "caption_pop", "intensity_tier": "light",
+                    "trigger_time": 2.0, "suggested_duration": 0.25, "volume": 0.06,
+                    "evidence": "The caption visibly pops at this frame.",
+                    "reason": "A quiet micro cue reinforces the text entrance.",
+                }],
+            })
+            candidate_plan = asset_director.plan(beats, catalog, taxonomy, "medical_education", sfx_opportunities_path=sfx, av_events_path=events)
+            plan_path = self.write_json(directory, "plan.json", candidate_plan)
+            selections = self.write_json(directory, "selections.json", {
+                "selections": [{
+                    "beat_id": "one", "visual_asset_id": None, "sound_asset_id": None, "character_asset_id": None,
+                    "visual_no_effect_reason": "No scene effect is needed for this caption event.",
+                    "character_no_effect_reason": "No face effect is needed for this caption event.",
+                }],
+                "sound_event_selections": [{"event_id": "caption:one", "sound_asset_id": "sound", "reason": "This restrained candidate matches the reviewed caption pop."}],
+            })
+            selected = asset_director.apply_selections(plan_path, selections, taxonomy)
+            self.assertEqual(len(selected["sound_effects"]), 1)
+            self.assertEqual(selected["sound_effects"][0]["linked_event_id"], "caption:one")
+            self.assertEqual(selected["sound_effects"][0]["intensity_tier"], "light")
+
+    def test_legacy_sound_plan_keeps_original_duration_policy(self):
+        taxonomy = json.loads(json.dumps(TAXONOMY))
+        taxonomy["selection"]["sound"].update({
+            "max_duration": 1.5,
+            "tier_max_duration": {"light": 0.5, "medium": 0.9, "strong": 1.2},
+            "tier_max_volume": {"light": 0.08, "medium": 0.12, "strong": 0.14},
+        })
+        plan = {
+            "style": "medical_education",
+            "sfx_timing_plan": {"source_mode": "legacy_beats"},
+            "sound_effects": [{
+                "beat_id": "chapter", "track": "SFX", "start": 2.0, "duration": 1.2,
+                "volume": 0.12, "intensity_tier": "medium",
+                "evidence": "The chapter visibly changes at this boundary.",
+                "timing_reason": "A short transition cue supports the section change.",
+            }],
+        }
+        self.assertEqual(asset_director.sound_plan_problems(plan, taxonomy), [])
+
     def test_shortlist_covers_purpose_tag_beyond_top_scores(self):
         with tempfile.TemporaryDirectory() as directory:
             taxonomy = dict(TAXONOMY)
